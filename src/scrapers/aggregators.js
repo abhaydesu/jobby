@@ -653,3 +653,147 @@ export async function scrapeAppleCareers(source) {
   if (!anyOk && firstErr) throw firstErr;
   return out;
 }
+
+export function parseInternshalaHtml(html = '', source = {}) {
+  const blocks = String(html || '').split(/<div[^>]+class="[^"]*\bindividual_internship\b[^"]*"/i).slice(1);
+  return blocks
+    .map((block) => {
+      const idMatch = /\binternshipId=["'](\d+)["']/i.exec(block);
+      const typeMatch = /\bemployment_type=["']([^"']+)["']/i.exec(block);
+      const hrefMatch = /<a[^>]+class="[^"]*job-title-href[^"]*"[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i.exec(block);
+      const altHrefMatch = !hrefMatch ? /\bdata-href=["']([^"']+)["']/i.exec(block) : null;
+      const href = hrefMatch?.[1] || altHrefMatch?.[1] || '';
+      const rawTitle = stripHtmlToText(hrefMatch?.[2] || '');
+      const compMatch = /<p[^>]+class="[^"]*company-name[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(block);
+      const company = stripHtmlToText(compMatch?.[1] || '') || 'Internshala Employer';
+
+      const locSection = /class="[^"]*row-1-item locations[^"]*"([\s\S]*?)<\/div>/i.exec(block)?.[1] || '';
+      const locLinks = [...locSection.matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
+      const locText = locLinks.join(', ') || stripHtmlToText(locSection) || 'India';
+      const isRemote = /work from home|remote/i.test(locText);
+
+      const stipendRaw = stripHtmlToText(/<span[^>]+class=['"]stipend['"][^>]*>([\s\S]*?)<\/span>/i.exec(block)?.[1] || '');
+      const aboutRaw = stripHtmlToText(/<div[^>]+class="[^"]*about_job[^"]*"[\s\S]*?<div[^>]+class="[^"]*text[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(block)?.[1] || '');
+      const skills = [...block.matchAll(/<div[^>]+class=['"]job_skill['"][^>]*>([\s\S]*?)<\/div>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
+      const cats = [...block.matchAll(/<div[^>]+class="[^"]*category_name[^"]*"[^>]*>([\s\S]*?)<\/div>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
+      const isIntern = /intern/i.test(`${typeMatch?.[1] || ''} ${href}`);
+
+      if (!rawTitle || !href) return null;
+      const fullUrl = href.startsWith('http') ? href : `https://internshala.com${href}`;
+      const title = isIntern && !/\bintern/i.test(rawTitle) ? `${rawTitle} Intern` : rawTitle;
+      const descText = [
+        aboutRaw,
+        stipendRaw ? `Stipend: ${stipendRaw}` : '',
+        cats.length ? `Categories: ${cats.join(', ')}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      return normalizeJobPayload({
+        sourceId: source.id || 'india-internshala',
+        sourceType: 'internshala',
+        externalId: idMatch?.[1] || fullUrl,
+        title,
+        company,
+        department: cats[0] || 'Engineering',
+        location: isRemote ? `Remote (${locText})` : locText,
+        explicitRemote: isRemote,
+        explicitSeniority: isIntern ? 'intern' : 'junior',
+        descriptionText: descText,
+        tags: [...skills, ...cats],
+        applyUrl: fullUrl,
+        companyUrl: 'https://internshala.com/',
+      });
+    })
+    .filter(Boolean);
+}
+
+export async function scrapeInternshala(source) {
+  const opts = aggOpts(source, 25000);
+  const urls = [
+    'https://internshala.com/internships/computer-science-internship-in-bangalore/',
+    'https://internshala.com/internships/work-from-home-computer-science-internships/',
+    'https://internshala.com/jobs/fresher-software-development-jobs/',
+  ];
+  const responses = await Promise.allSettled(urls.map((u) => fetchText(u, opts)));
+  const seen = new Set();
+  const out = [];
+  let anyOk = false;
+  let firstErr = null;
+  for (const r of responses) {
+    if (r.status === 'fulfilled') {
+      anyOk = true;
+      for (const job of parseInternshalaHtml(r.value, source)) {
+        if (!seen.has(job.external_id)) {
+          seen.add(job.external_id);
+          out.push(job);
+        }
+      }
+    } else if (!firstErr) {
+      firstErr = r.reason;
+    }
+  }
+  if (!anyOk && firstErr) throw firstErr;
+  return out;
+}
+
+export function parseInstahyreJson(data, source = {}) {
+  const objects = Array.isArray(data?.objects) ? data.objects : [];
+  return objects
+    .filter((o) => o && o.title && (o.public_url || o.id))
+    .map((o) => {
+      const company = o.employer?.company_name || 'Instahyre Company';
+      const logo = o.employer?.profile_image_src || '';
+      const keywords = Array.isArray(o.keywords) ? o.keywords.filter(Boolean) : [];
+      const loc = o.locations || 'India';
+      const desc = [
+        o.employer?.instahyre_note || o.employer?.company_tagline || '',
+        keywords.length ? `Tech stack: ${keywords.join(', ')}.` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return normalizeJobPayload({
+        sourceId: source.id || 'india-instahyre',
+        sourceType: 'instahyre',
+        externalId: o.id || o.public_url,
+        title: o.title,
+        company,
+        companyLogo: logo,
+        location: loc,
+        explicitRemote: /\bremote|work from home\b/i.test(loc),
+        descriptionText: desc,
+        tags: keywords,
+        applyUrl: o.public_url || `https://www.instahyre.com/job-${o.id}/`,
+        companyUrl: 'https://www.instahyre.com/',
+      });
+    });
+}
+
+export async function scrapeInstahyre(source) {
+  const opts = aggOpts(source, 25000);
+  const urls = [
+    'https://www.instahyre.com/api/v1/job_search?company_size=0&experience=0&job_type=0&offset=0',
+    'https://www.instahyre.com/api/v1/job_search?company_size=0&experience=1&job_type=0&offset=0',
+    'https://www.instahyre.com/api/v1/job_search?company_size=0&job_type=0&offset=0',
+  ];
+  const responses = await Promise.allSettled(urls.map((u) => fetchJson(u, opts)));
+  const seen = new Set();
+  const out = [];
+  let anyOk = false;
+  let firstErr = null;
+  for (const r of responses) {
+    if (r.status === 'fulfilled') {
+      anyOk = true;
+      for (const job of parseInstahyreJson(r.value, source)) {
+        if (!seen.has(job.external_id)) {
+          seen.add(job.external_id);
+          out.push(job);
+        }
+      }
+    } else if (!firstErr) {
+      firstErr = r.reason;
+    }
+  }
+  if (!anyOk && firstErr) throw firstErr;
+  return out;
+}

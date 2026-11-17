@@ -24,6 +24,8 @@ import {
   parseGoogleCareersHtml,
   parseAtlassianListings,
   parseAppleCareersHtml,
+  parseInternshalaHtml,
+  parseInstahyreJson,
 } from '../src/scrapers/aggregators.js';
 import { createApp } from '../src/server.js';
 
@@ -620,4 +622,23 @@ test('Big Tech parsers normalize real Amazon, Google, Atlassian, and Apple fixtu
   assert.equal(appleJobs.length, 3);
   assert.equal(appleJobs[2].title, 'MBA Internships');
   assert.equal(appleJobs[2].seniority, 'intern');
+});
+
+test('Indian boards parsers normalize real Internshala HTML and Instahyre JSON fixtures', () => {
+  const isHtml = fs.readFileSync(new URL('./fixtures/internshala.html', import.meta.url), 'utf8');
+  const isJobs = parseInternshalaHtml(isHtml, { id: 'india-internshala' });
+  assert.ok(isJobs.length >= 2);
+  assert.equal(isJobs[0].source_type, 'internshala');
+  assert.equal(isJobs[0].company, 'Astrorize');
+  assert.equal(isJobs[0].seniority, 'intern');
+  assert.equal(isJobs[0].salary_currency, 'INR');
+  assert.equal(isJobs[0].is_salary_estimated, false);
+  assert.equal(isJobs[0].salary_min, 18000 * 12);
+
+  const ihJson = JSON.parse(fs.readFileSync(new URL('./fixtures/instahyre.json', import.meta.url), 'utf8'));
+  const ihJobs = parseInstahyreJson(ihJson, { id: 'india-instahyre' });
+  assert.equal(ihJobs.length, 3);
+  assert.equal(ihJobs[0].source_type, 'instahyre');
+  assert.equal(ihJobs[0].company, 'D. E. Shaw');
+  assert.ok(ihJobs[0].skills.includes('Python'));
 });

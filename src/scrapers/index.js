@@ -29,6 +29,8 @@ import {
   scrapeGoogleCareers,
   scrapeAtlassian,
   scrapeAppleCareers,
+  scrapeInternshala,
+  scrapeInstahyre,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
 import { upsertJobsBatch, recordSourceHealth } from '../db.js';
@@ -183,6 +185,8 @@ export const DEFAULT_SOURCES = [
   { id: 'bigtech-google', name: 'Google Careers (India)', type: 'google', tier: 1, config: { companyName: 'Google', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
   { id: 'bigtech-atlassian', name: 'Atlassian (India & Remote)', type: 'atlassian', tier: 1, config: { companyName: 'Atlassian', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
   { id: 'bigtech-apple', name: 'Apple Careers (India)', type: 'apple', tier: 1, config: { companyName: 'Apple', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'india-internshala', name: 'Internshala (CS Bengaluru & Remote)', type: 'internshala', tier: 2, config: { category: 'India Internships', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
+  { id: 'india-instahyre', name: 'Instahyre (India Startups)', type: 'instahyre', tier: 2, config: { category: 'India Tech', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
 ];
 
 const LARGE_BOARD_IDS = new Set([
@@ -255,6 +259,8 @@ const ADAPTER_MAP = {
   google: scrapeGoogleCareers,
   atlassian: scrapeAtlassian,
   apple: scrapeAppleCareers,
+  internshala: scrapeInternshala,
+  instahyre: scrapeInstahyre,
   custom: scrapeCustomUrl,
 };
 
