@@ -961,6 +961,10 @@ test('City alias dedup, canonical URL multi-source merge with job_sources, and 1
   const labels = res.jobs[0].also_on.map((x) => x.label).sort();
   assert.deepEqual(labels, ['LinkedIn', 'Simplify']);
 
+  const bySecondarySource = queryJobs(db, { sourceType: 'linkedin_guest' });
+  assert.equal(bySecondarySource.total, 1);
+  assert.equal(bySecondarySource.jobs[0].id, res.jobs[0].id);
+
   const oldIso = new Date(Date.now() - 16 * 86400 * 1000).toISOString();
   const savedOld = normalizeJobPayload({
     sourceId: 'simplify-internships',

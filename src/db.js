@@ -1199,8 +1199,8 @@ export function queryJobs(db, params = {}) {
   }
 
   if (sourceType && sourceType !== 'all') {
-    where.push('j.source_type = ?');
-    args.push(sourceType);
+    where.push('(j.source_type = ? OR EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id = j.id AND js.source_type = ?))');
+    args.push(sourceType, sourceType);
   }
 
   if (sourceId) {

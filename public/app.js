@@ -258,7 +258,6 @@ function syncQuickIntentAndAdvBadge() {
   let advCount = 0;
   if (f.seniority !== 'intern,junior') advCount++;
   if (f.batch) advCount++;
-  if (f.sourceType) advCount++;
   if (f.maxAgeDays > 0) advCount++;
   if (f.minSalary > 0) advCount++;
   if (f.minScore > 0 && f.minScore < 80) advCount++;
@@ -284,7 +283,7 @@ function renderActiveFilterChips() {
   if (f.minScore > 0) chips.push({ key: 'minScore', label: `Fit ≥ ${f.minScore}%` });
   if (f.hasSalaryOnly) chips.push({ key: 'hasSalaryOnly', label: 'Disclosed Pay' });
   if (f.savedOnly) chips.push({ key: 'savedOnly', label: 'Saved Only' });
-  if (f.sourceType) chips.push({ key: 'sourceType', label: `ATS: ${f.sourceType}` });
+  if (f.sourceType) chips.push({ key: 'sourceType', label: `Source: ${fmtSourceLabel(f.sourceType)}` });
   if (f.maxAgeDays > 0) chips.push({ key: 'maxAgeDays', label: `Last ${f.maxAgeDays}d` });
   if (f.minSalary > 0) chips.push({ key: 'minSalary', label: `$${Math.round(f.minSalary / 1000)}k+ eq.` });
   if (f.visaOnly) chips.push({ key: 'visaOnly', label: 'Visa Sponsor' });
@@ -361,6 +360,51 @@ function renderActiveFilterChips() {
   $('#chips-clear-all')?.addEventListener('click', resetFilters);
 }
 
+const SOURCE_DISPLAY_NAMES = {
+  internshala: 'Internshala',
+  instahyre: 'Instahyre',
+  linkedin_guest: 'LinkedIn Guest',
+  linkedin_ext: 'LinkedIn Extension',
+  linkedin_email: 'LinkedIn Email',
+  wellfound_ext: 'Wellfound Extension',
+  wellfound_email: 'Wellfound Email',
+  naukri_ext: 'Naukri Extension',
+  naukri_email: 'Naukri Email',
+  instahyre_ext: 'Instahyre Extension',
+  cutshort_ext: 'Cutshort Extension',
+  internshala_email: 'Internshala Email',
+  greenhouse: 'Greenhouse',
+  ashby: 'Ashby',
+  lever: 'Lever',
+  workday: 'Workday',
+  oracle_hcm: 'Oracle HCM',
+  smartrecruiters: 'SmartRecruiters',
+  workable: 'Workable',
+  recruitee: 'Recruitee',
+  rippling: 'Rippling',
+  pinpoint: 'Pinpoint',
+  personio: 'Personio',
+  teamtailor: 'Teamtailor',
+  amazon: 'Amazon',
+  google: 'Google',
+  atlassian: 'Atlassian',
+  apple: 'Apple',
+  simplify: 'Simplify',
+  remotive: 'Remotive',
+  arbeitnow: 'Arbeitnow',
+  remoteok: 'RemoteOK',
+  himalayas: 'Himalayas',
+  jobicy: 'Jobicy',
+  wwr: 'WeWorkRemotely',
+  hackernews: 'HN Hiring',
+  yc: 'YC Jobs',
+};
+
+function fmtSourceLabel(rawType = '') {
+  if (SOURCE_DISPLAY_NAMES[rawType]) return SOURCE_DISPLAY_NAMES[rawType];
+  return String(rawType || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function renderStatsAndFacets() {
   const s = state.stats;
   $('#kpi-total').textContent = (s.totalActive || 0).toLocaleString();
@@ -378,9 +422,9 @@ function renderStatsAndFacets() {
 
   const select = $('#f-source-type');
   const currentVal = state.filters.sourceType;
-  const options = ['<option value="">All Platforms</option>'];
+  const options = ['<option value="">All Sources &amp; Platforms</option>'];
   for (const st of state.facets.sourceTypes || []) {
-    options.push(`<option value="${esc(st.type)}">${esc(st.type.toUpperCase())} (${st.count})</option>`);
+    options.push(`<option value="${esc(st.type)}">${esc(fmtSourceLabel(st.type))} (${st.count})</option>`);
   }
   select.innerHTML = options.join('');
   select.value = currentVal;
