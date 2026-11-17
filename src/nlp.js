@@ -780,7 +780,7 @@ export function extractExperience(text = '', title = '') {
   const roleCategory = classifyRoleCategory(titleStr, '', content);
 
   // Classify seniority from title + body fresher cues (final-year/intern/new-grad aware)
-  const internRx = /\b(intern|internship|co-?op|working\s+student|student\s+assistant|werkstudent|praktikum|stagiaire|apprentice|apprenticeship|trainee|fellowship|summer\s+20\d\d)\b/i;
+  const internRx = /\b(interns?|internships?|co-?ops?|working\s+student|student\s+assistant|werkstudent|praktikum|stagiaire|apprentice|apprenticeship|trainee|fellowship|summer\s+20\d\d)\b/i;
   const execRx = /\b(vp|vice\s+president|chief|cto|ceo|cpo|cfo|head\s+of|director|associate\s+(?:director|vp|vice\s+president|partner|general\s+counsel))\b/i;
   const staffRx = /\b(staff|principal|distinguished|fellow|architect)\b/i;
   const leadRx = /\b(lead|tech\s+lead|team\s+lead|engineering\s+manager|manager)\b/i;

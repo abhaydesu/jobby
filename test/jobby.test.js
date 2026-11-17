@@ -19,6 +19,12 @@ import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSo
 import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
 import { parseWorkdayListings, parseOracleHcm, parsePersonioXml, parseTeamtailorRss } from '../src/scrapers/ats.js';
+import {
+  parseAmazonJobs,
+  parseGoogleCareersHtml,
+  parseAtlassianListings,
+  parseAppleCareersHtml,
+} from '../src/scrapers/aggregators.js';
 import { createApp } from '../src/server.js';
 
 test('NLP: HTML stripping and XSS sanitization', () => {
@@ -587,4 +593,31 @@ test('Oracle HCM, Personio XML, Teamtailor RSS parsers & extended ATS fingerprin
   assert.equal(detectAtsFromText('https://acme.bamboohr.com/careers')?.type, 'bamboohr');
   assert.equal(detectAtsFromText('https://acme.breezy.hr/p/123')?.type, 'breezy');
   assert.equal(detectAtsFromText('https://careers-apac-atlassian.icims.com/jobs/123')?.type, 'icims');
+});
+
+test('Big Tech parsers normalize real Amazon, Google, Atlassian, and Apple fixtures', () => {
+  const amazonFx = JSON.parse(fs.readFileSync(new URL('./fixtures/amazon.json', import.meta.url), 'utf8'));
+  const amazonJobs = parseAmazonJobs(amazonFx, { id: 'bigtech-amazon' });
+  assert.equal(amazonJobs.length, 3);
+  assert.equal(amazonJobs[0].source_type, 'amazon');
+  assert.equal(amazonJobs[0].seniority, 'intern');
+  assert.ok(amazonJobs[0].skills.includes('Python'));
+
+  const googleHtml = fs.readFileSync(new URL('./fixtures/google.html', import.meta.url), 'utf8');
+  const googleJobs = parseGoogleCareersHtml(googleHtml, { id: 'bigtech-google' });
+  assert.equal(googleJobs.length, 3);
+  assert.equal(googleJobs[0].company, 'Google');
+  assert.ok(googleJobs[0].location.includes('Bengaluru'));
+
+  const atlassianFx = JSON.parse(fs.readFileSync(new URL('./fixtures/atlassian.json', import.meta.url), 'utf8'));
+  const atlassianJobs = parseAtlassianListings(atlassianFx, { id: 'bigtech-atlassian' });
+  assert.equal(atlassianJobs.length, 3);
+  assert.equal(atlassianJobs[2].title, 'Data Platform Engineer');
+  assert.ok(atlassianJobs[2].location.includes('Bengaluru'));
+
+  const appleHtml = fs.readFileSync(new URL('./fixtures/apple.html', import.meta.url), 'utf8');
+  const appleJobs = parseAppleCareersHtml(appleHtml, { id: 'bigtech-apple' });
+  assert.equal(appleJobs.length, 3);
+  assert.equal(appleJobs[2].title, 'MBA Internships');
+  assert.equal(appleJobs[2].seniority, 'intern');
 });

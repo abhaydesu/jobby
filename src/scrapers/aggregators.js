@@ -438,3 +438,218 @@ export async function scrapeSimplifyGithub(source) {
     });
   });
 }
+
+export function parseAmazonJobs(data, source = {}) {
+  const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+  return jobs
+    .filter((j) => j && j.title && (j.job_path || j.id_icims))
+    .map((j) => {
+      const loc = j.normalized_location || j.location || j.city || 'Unspecified';
+      const html = [j.description, j.basic_qualifications, j.preferred_qualifications].filter(Boolean).join('\n');
+      const applyUrl = j.job_path ? `https://www.amazon.jobs${j.job_path}` : j.url_next_step;
+      return normalizeJobPayload({
+        sourceId: source.id || 'bigtech-amazon',
+        sourceType: 'amazon',
+        externalId: j.id_icims || j.id || j.job_path,
+        title: j.title,
+        company: 'Amazon',
+        department: j.job_category || j.job_family || '',
+        location: loc,
+        explicitRemote: /\bremote|virtual\b/i.test(loc),
+        descriptionHtml: html,
+        applyUrl,
+        companyUrl: 'https://www.amazon.jobs/',
+        postedAt: j.posted_date || null,
+      });
+    });
+}
+
+export async function scrapeAmazonJobs(source) {
+  const opts = aggOpts(source, 25000);
+  const urls = [
+    'https://www.amazon.jobs/en/search.json?base_query=software+intern&normalized_country_code[]=IND&result_limit=40&sort=recent',
+    'https://www.amazon.jobs/en/search.json?base_query=software+development+engineer&normalized_country_code[]=IND&category_type=studentprograms&result_limit=40&sort=recent',
+    'https://www.amazon.jobs/en/search.json?base_query=intern&category_type=studentprograms&result_limit=30&sort=recent',
+  ];
+  const responses = await Promise.allSettled(urls.map((u) => fetchJson(u, opts)));
+  const byId = new Map();
+  let anyOk = false;
+  let firstErr = null;
+  for (const r of responses) {
+    if (r.status === 'fulfilled') {
+      anyOk = true;
+      for (const j of r.value?.jobs || []) {
+        const key = j.id_icims || j.id;
+        if (key && !byId.has(key)) byId.set(key, j);
+      }
+    } else if (!firstErr) {
+      firstErr = r.reason;
+    }
+  }
+  if (!anyOk && firstErr) throw firstErr;
+  return parseAmazonJobs({ jobs: Array.from(byId.values()) }, source);
+}
+
+export function parseGoogleCareersHtml(html = '', source = {}) {
+  const match = /AF_initDataCallback\(\{key:\s*'ds:1'[\s\S]*?data:([\s\S]*?),\s*sideChannel:/i.exec(String(html || ''));
+  if (!match) return [];
+  let root;
+  try {
+    root = JSON.parse(match[1]);
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(root?.[0]) ? root[0] : [];
+  return rows
+    .filter((item) => Array.isArray(item) && item[0] && item[1])
+    .map((item) => {
+      const id = String(item[0]);
+      const title = String(item[1]);
+      const locs = Array.isArray(item[9]) ? item[9].map((l) => (Array.isArray(l) ? l[0] : l)).filter(Boolean) : [];
+      const location = locs.slice(0, 3).join(' • ') || 'India';
+      const descParts = [item[10]?.[1], item[3]?.[1], item[4]?.[1]].filter(Boolean).join('\n');
+      const epochSec = Number(item[12]?.[0] || item[13]?.[0] || 0);
+      const postedAt = epochSec > 0 ? epochSec * 1000 : null;
+      return normalizeJobPayload({
+        sourceId: source.id || 'bigtech-google',
+        sourceType: 'google',
+        externalId: id,
+        title,
+        company: 'Google',
+        location,
+        explicitRemote: /\bremote\b/i.test(location),
+        descriptionHtml: descParts,
+        applyUrl: `https://www.google.com/about/careers/applications/jobs/results/${encodeURIComponent(id)}`,
+        companyUrl: 'https://www.google.com/about/careers/applications/',
+        postedAt,
+      });
+    });
+}
+
+export async function scrapeGoogleCareers(source) {
+  const opts = aggOpts(source, 25000);
+  const urls = [
+    'https://www.google.com/about/careers/applications/jobs/results/?q=Software%20Engineer%20Intern&location=India',
+    'https://www.google.com/about/careers/applications/jobs/results/?q=Software%20Engineer&target_level=EARLY&location=India',
+  ];
+  const responses = await Promise.allSettled(urls.map((u) => fetchText(u, opts)));
+  const seen = new Set();
+  const out = [];
+  let anyOk = false;
+  let firstErr = null;
+  for (const r of responses) {
+    if (r.status === 'fulfilled') {
+      anyOk = true;
+      for (const job of parseGoogleCareersHtml(r.value, source)) {
+        if (!seen.has(job.external_id)) {
+          seen.add(job.external_id);
+          out.push(job);
+        }
+      }
+    } else if (!firstErr) {
+      firstErr = r.reason;
+    }
+  }
+  if (!anyOk && firstErr) throw firstErr;
+  return out;
+}
+
+export function parseAtlassianListings(data, source = {}) {
+  const list = Array.isArray(data) ? data : [];
+  const prioritized = list.filter((x) => {
+    const locs = Array.isArray(x.locations) ? x.locations.join(' ') : '';
+    const ttl = String(x.title || '');
+    return /\b(india|bengaluru|bangalore|remote|intern|grad|university|early|junior|entry)\b/i.test(`${locs} ${ttl}`);
+  });
+  return prioritized.slice(0, 180).map((item) => {
+    const locs = Array.isArray(item.locations) ? item.locations : [];
+    const loc = locs.slice(0, 2).join(' • ') || 'Global';
+    const desc = [item.overview, item.responsibilities, item.qualifications].filter(Boolean).join('\n');
+    return normalizeJobPayload({
+      sourceId: source.id || 'bigtech-atlassian',
+      sourceType: 'atlassian',
+      externalId: item.id,
+      title: item.title,
+      company: 'Atlassian',
+      department: item.category || '',
+      location: loc,
+      explicitRemote: locs.some((l) => /\bremote\b/i.test(l)),
+      employmentType: item.type || 'Full-Time',
+      descriptionHtml: desc,
+      applyUrl: item.applyUrl || item.portalJobPost?.portalUrl,
+      companyUrl: 'https://www.atlassian.com/company/careers',
+      postedAt: item.portalJobPost?.updatedDate || null,
+    });
+  });
+}
+
+export async function scrapeAtlassian(source) {
+  const data = await fetchJson('https://www.atlassian.com/endpoint/careers/listings', aggOpts(source, 30000));
+  return parseAtlassianListings(data, source);
+}
+
+export function parseAppleCareersHtml(html = '', source = {}) {
+  const m = /window\.__staticRouterHydrationData\s*=\s*JSON\.parse\("([\s\S]*?)"\);/i.exec(String(html || ''));
+  if (!m) return [];
+  let parsed;
+  try {
+    const unescaped = JSON.parse(`"${m[1]}"`);
+    parsed = JSON.parse(unescaped);
+  } catch {
+    return [];
+  }
+  const loaderData = parsed?.loaderData || {};
+  const resultsKey = Object.keys(loaderData).find((k) => Array.isArray(loaderData[k]?.searchResults));
+  const results = resultsKey ? loaderData[resultsKey].searchResults : [];
+
+  return results
+    .filter((item) => item && item.postingTitle && (item.id || item.positionId))
+    .map((item) => {
+      const locs = Array.isArray(item.locations) ? item.locations : [];
+      const locStr = locs.map((l) => [l.city, l.name, l.countryName].filter(Boolean).join(', ')).filter(Boolean).slice(0, 2).join(' • ') || 'India';
+      const slugId = item.id || item.positionId;
+      const slugTitle = item.transformedPostingTitle ? `/${item.transformedPostingTitle}` : '';
+      return normalizeJobPayload({
+        sourceId: source.id || 'bigtech-apple',
+        sourceType: 'apple',
+        externalId: slugId,
+        title: item.postingTitle,
+        company: 'Apple',
+        department: item.team?.teamName || '',
+        location: locStr,
+        explicitRemote: Boolean(item.homeOffice),
+        descriptionText: item.jobSummary || '',
+        applyUrl: `https://jobs.apple.com/en-in/details/${encodeURIComponent(slugId)}${slugTitle}`,
+        companyUrl: 'https://jobs.apple.com/en-in/',
+        postedAt: item.postDateInGMT || item.postingDate || null,
+      });
+    });
+}
+
+export async function scrapeAppleCareers(source) {
+  const opts = aggOpts(source, 25000);
+  const urls = [
+    'https://jobs.apple.com/en-in/search?location=india-IND',
+    'https://jobs.apple.com/en-in/search?search=intern&location=india-IND',
+  ];
+  const responses = await Promise.allSettled(urls.map((u) => fetchText(u, opts)));
+  const seen = new Set();
+  const out = [];
+  let anyOk = false;
+  let firstErr = null;
+  for (const r of responses) {
+    if (r.status === 'fulfilled') {
+      anyOk = true;
+      for (const job of parseAppleCareersHtml(r.value, source)) {
+        if (!seen.has(job.external_id)) {
+          seen.add(job.external_id);
+          out.push(job);
+        }
+      }
+    } else if (!firstErr) {
+      firstErr = r.reason;
+    }
+  }
+  if (!anyOk && firstErr) throw firstErr;
+  return out;
+}

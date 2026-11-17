@@ -25,6 +25,10 @@ import {
   scrapeHackerNewsWhoIsHiring,
   scrapeYCJobs,
   scrapeSimplifyGithub,
+  scrapeAmazonJobs,
+  scrapeGoogleCareers,
+  scrapeAtlassian,
+  scrapeAppleCareers,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
 import { upsertJobsBatch, recordSourceHealth } from '../db.js';
@@ -99,6 +103,7 @@ export const DEFAULT_SOURCES = [
   { id: 'gh-pinterest', name: 'Pinterest', type: 'greenhouse', tier: 1, config: { slug: 'pinterest', companyName: 'Pinterest' } },
   { id: 'gh-lyft', name: 'Lyft', type: 'greenhouse', tier: 1, config: { slug: 'lyft', companyName: 'Lyft' } },
   { id: 'gh-affirm', name: 'Affirm', type: 'greenhouse', tier: 1, config: { slug: 'affirm', companyName: 'Affirm' } },
+  { id: 'gh-razorpay', name: 'Razorpay', type: 'greenhouse', tier: 1, config: { slug: 'razorpaysoftwareprivatelimited', companyName: 'Razorpay', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
 
   // Tier 1: Direct Ashby HQ ATS Boards
   { id: 'ashby-openai', name: 'OpenAI', type: 'ashby', tier: 1, config: { slug: 'openai', companyName: 'OpenAI' } },
@@ -173,6 +178,11 @@ export const DEFAULT_SOURCES = [
   { id: 'personio-main', name: 'Personio', type: 'personio', tier: 1, config: { slug: 'personio', companyName: 'Personio', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
   { id: 'teamtailor-main', name: 'Teamtailor', type: 'teamtailor', tier: 1, config: { host: 'career.teamtailor.com', companyName: 'Teamtailor', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
   { id: 'sr-bosch-india', name: 'Bosch India', type: 'smartrecruiters', tier: 1, config: { slug: 'BoschGroup', query: 'Bengaluru', companyName: 'Bosch', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 45 } },
+
+  { id: 'bigtech-amazon', name: 'Amazon Jobs (India & Interns)', type: 'amazon', tier: 1, config: { companyName: 'Amazon', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'bigtech-google', name: 'Google Careers (India)', type: 'google', tier: 1, config: { companyName: 'Google', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'bigtech-atlassian', name: 'Atlassian (India & Remote)', type: 'atlassian', tier: 1, config: { companyName: 'Atlassian', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'bigtech-apple', name: 'Apple Careers (India)', type: 'apple', tier: 1, config: { companyName: 'Apple', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
 ];
 
 const LARGE_BOARD_IDS = new Set([
@@ -193,7 +203,7 @@ export function resolveSourceScheduleMeta(s) {
 
 export function seedDefaultSources(db) {
   const deadIds = [
-    'gh-retool', 'lever-plaid', 'lever-mistral', 'gh-razorpay', 'gh-postman',
+    'gh-retool', 'lever-plaid', 'lever-mistral', 'gh-postman',
     'gh-confluent', 'gh-browserstack', 'ashby-truefoundry', 'ashby-cal',
     'lever-hasura', 'lever-appsmith', 'agg-themuse', 'ashby-deel',
     'sr-visa', 'workable-canonical',
@@ -241,6 +251,10 @@ const ADAPTER_MAP = {
   hackernews: scrapeHackerNewsWhoIsHiring,
   yc: scrapeYCJobs,
   simplify: scrapeSimplifyGithub,
+  amazon: scrapeAmazonJobs,
+  google: scrapeGoogleCareers,
+  atlassian: scrapeAtlassian,
+  apple: scrapeAppleCareers,
   custom: scrapeCustomUrl,
 };
 
