@@ -15,8 +15,8 @@ import {
   estimateStipendBenchmark,
 } from '../src/nlp.js';
 import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '../src/matcher.js';
-import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth, getSourceCandidates } from '../src/db.js';
-import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
+import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth, getSourceCandidates, expireStaleJobs } from '../src/db.js';
+import { normalizeJobPayload, fetchWithHardening, computeDedupeHash, normalizeCityAliases, canonicalizeApplyUrl } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
 import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates, verifyPendingCandidates } from '../src/scrapers/autodiscover.js';
 import { parseJobAlertEmail } from '../src/importer.js';
@@ -896,4 +896,89 @@ test('Manual URL and EML/mbox importers ingest job alert emails and Schema.org J
     ]);
     db.close();
   }
+});
+
+test('City alias dedup, canonical URL multi-source merge with job_sources, and 14d aggregator expiry', () => {
+  assert.equal(normalizeCityAliases('Bangalore, Karnataka, India'), 'bengaluru');
+  assert.equal(normalizeCityAliases('BLR Urban'), 'bengaluru');
+  assert.equal(normalizeCityAliases('Gurgaon, Haryana'), 'gurugram');
+
+  const h1 = computeDedupeHash('Stripe', 'Software Engineer Intern', 'Bangalore, Karnataka');
+  const h2 = computeDedupeHash('Stripe Inc.', 'Software Engineer Intern', 'Bengaluru Urban, IN');
+  assert.equal(h1, h2);
+
+  assert.equal(
+    canonicalizeApplyUrl('https://boards.greenhouse.io/stripe/jobs/12345/?utm_source=linkedin&ref=abc#top'),
+    'https://boards.greenhouse.io/stripe/jobs/12345'
+  );
+
+  const db = initDb(':memory:');
+  db.prepare("INSERT INTO sources (id, name, type, tier, config, enabled) VALUES ('gh-stripe', 'Stripe', 'greenhouse', 1, '{}', 1)").run();
+  db.prepare("INSERT INTO sources (id, name, type, tier, config, enabled) VALUES ('agg-linkedin-guest', 'LinkedIn Guest', 'linkedin_guest', 3, '{}', 1)").run();
+  db.prepare("INSERT INTO sources (id, name, type, tier, config, enabled) VALUES ('simplify-internships', 'SimplifyJobs', 'simplify', 2, '{}', 1)").run();
+
+  const linkedinJob = normalizeJobPayload({
+    sourceId: 'agg-linkedin-guest',
+    sourceType: 'linkedin_guest',
+    externalId: 'li-stripe-1',
+    title: 'Software Engineer Intern',
+    company: 'Stripe',
+    location: 'BLR, India',
+    descriptionText: 'Backend internship on LinkedIn.',
+    applyUrl: 'https://boards.greenhouse.io/stripe/jobs/12345?utm_source=linkedin',
+  });
+  upsertJobsBatch(db, [linkedinJob], 'agg-linkedin-guest');
+
+  const ghJob = normalizeJobPayload({
+    sourceId: 'gh-stripe',
+    sourceType: 'greenhouse',
+    externalId: '12345',
+    title: 'Software Engineer Intern',
+    company: 'Stripe',
+    location: 'Bengaluru, India',
+    descriptionText: 'Direct Greenhouse listing with TypeScript and Go.',
+    applyUrl: 'https://boards.greenhouse.io/stripe/jobs/12345?ref=direct',
+  });
+  upsertJobsBatch(db, [ghJob], 'gh-stripe');
+
+  const simpJob = normalizeJobPayload({
+    sourceId: 'simplify-internships',
+    sourceType: 'simplify',
+    externalId: 'simp-stripe-1',
+    title: 'Software Engineer Intern',
+    company: 'Stripe',
+    location: 'Bangalore',
+    descriptionText: 'Listed on Simplify too.',
+    applyUrl: 'https://boards.greenhouse.io/stripe/jobs/12345',
+  });
+  upsertJobsBatch(db, [simpJob], 'simplify-internships');
+
+  const res = queryJobs(db, { q: 'Stripe' });
+  assert.equal(res.total, 1);
+  assert.equal(res.jobs[0].source_type, 'greenhouse');
+  assert.equal(res.jobs[0].source_id, 'gh-stripe');
+  const labels = res.jobs[0].also_on.map((x) => x.label).sort();
+  assert.deepEqual(labels, ['LinkedIn', 'Simplify']);
+
+  const oldIso = new Date(Date.now() - 16 * 86400 * 1000).toISOString();
+  const savedOld = normalizeJobPayload({
+    sourceId: 'simplify-internships',
+    sourceType: 'simplify',
+    externalId: 'saved-old-1',
+    title: 'New Grad Backend Engineer',
+    company: 'Vercel',
+    location: 'Remote',
+    descriptionText: 'Node.js, TypeScript.',
+    applyUrl: 'https://vercel.com/careers/old-1',
+  });
+  upsertJobsBatch(db, [savedOld], 'simplify-internships');
+  db.prepare("UPDATE jobs SET last_seen_at = ? WHERE id = ?").run(oldIso, res.jobs[0].id);
+  db.prepare("UPDATE jobs SET last_seen_at = ?, status = 'saved' WHERE external_id = 'saved-old-1'").run(oldIso);
+
+  const expiredCount = expireStaleJobs(db, 14);
+  assert.equal(expiredCount, 1);
+  const afterExpire = queryJobs(db, {});
+  assert.equal(afterExpire.total, 1);
+  assert.equal(afterExpire.jobs[0].company, 'Vercel');
+  db.close();
 });

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { scoreJobAgainstProfile } from './matcher.js';
 import { extractExperience, extractWorkMode, extractSalary, estimateStipendBenchmark } from './nlp.js';
+import { canonicalizeApplyUrl } from './scrapers/normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'jobby.db');
@@ -96,6 +97,7 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
       red_flags TEXT NOT NULL DEFAULT '[]',
       visa_sponsorship INTEGER DEFAULT 0,
       apply_url TEXT NOT NULL,
+      canonical_url TEXT DEFAULT '',
       company_url TEXT DEFAULT '',
       posted_at TEXT,
       first_seen_at TEXT NOT NULL,
@@ -176,7 +178,23 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_type_token ON source_candidates(type, board_token);
+
+    CREATE TABLE IF NOT EXISTS job_sources (
+      job_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT '',
+      apply_url TEXT NOT NULL DEFAULT '',
+      seen_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_sources_job ON job_sources(job_id);
   `);
+
+  const jobCols = db.prepare('PRAGMA table_info(jobs)').all().map((c) => c.name);
+  if (!jobCols.includes('canonical_url')) {
+    db.exec("ALTER TABLE jobs ADD COLUMN canonical_url TEXT DEFAULT ''");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url)');
 
   // Seed default profile if empty
   const existingProfile = db.prepare('SELECT id FROM profile WHERE id = 1').get();
@@ -717,6 +735,7 @@ export function hydrateJobRow(row, includeDescription = false) {
     red_flags: safeJsonParse(row.red_flags, []),
     visa_sponsorship: Boolean(row.visa_sponsorship),
     apply_url: row.apply_url,
+    canonical_url: row.canonical_url || '',
     company_url: row.company_url,
     posted_at: row.posted_at,
     first_seen_at: row.first_seen_at,
@@ -727,6 +746,7 @@ export function hydrateJobRow(row, includeDescription = false) {
     status: row.status,
     user_notes: row.user_notes || '',
     applied_at: row.applied_at,
+    also_on: Array.isArray(row.also_on) ? row.also_on : [],
   };
   if (includeDescription) {
     out.description_html = row.description_html || '';
@@ -748,6 +768,129 @@ const FULL_SNAPSHOT_ATS = new Set([
   'pinpoint',
 ]);
 
+const TIER1_SOURCE_TYPES = new Set([
+  'greenhouse',
+  'ashby',
+  'lever',
+  'smartrecruiters',
+  'workable',
+  'recruitee',
+  'rippling',
+  'pinpoint',
+  'workday',
+  'oracle_hcm',
+  'personio',
+  'teamtailor',
+  'amazon',
+  'google',
+  'atlassian',
+  'apple',
+]);
+
+const TIER2_SOURCE_TYPES = new Set([
+  'simplify',
+  'hackernews',
+  'yc',
+  'internshala',
+  'instahyre',
+  'email_import',
+  'linkedin_email',
+  'naukri_email',
+  'wellfound_email',
+  'internshala_email',
+  'linkedin_ext',
+  'wellfound_ext',
+  'naukri_ext',
+  'instahyre_ext',
+  'cutshort_ext',
+  'browser_ext',
+]);
+
+const SOURCE_LABEL_MAP = {
+  linkedin_guest: 'LinkedIn',
+  linkedin_ext: 'LinkedIn',
+  linkedin_email: 'LinkedIn',
+  simplify: 'Simplify',
+  wellfound_ext: 'Wellfound',
+  wellfound_email: 'Wellfound',
+  naukri_ext: 'Naukri',
+  naukri_email: 'Naukri',
+  instahyre: 'Instahyre',
+  instahyre_ext: 'Instahyre',
+  internshala: 'Internshala',
+  internshala_email: 'Internshala',
+  cutshort_ext: 'Cutshort',
+  remotive: 'Remotive',
+  arbeitnow: 'Arbeitnow',
+  remoteok: 'RemoteOK',
+  himalayas: 'Himalayas',
+  jobicy: 'Jobicy',
+  wwr: 'WeWorkRemotely',
+  hackernews: 'HN Hiring',
+  yc: 'YC Jobs',
+};
+
+function resolveSourceTier(db, sourceId, sourceType) {
+  if (sourceId) {
+    const s = db.prepare('SELECT tier FROM sources WHERE id = ?').get(sourceId);
+    if (s?.tier) return Number(s.tier);
+  }
+  if (TIER1_SOURCE_TYPES.has(sourceType)) return 1;
+  if (TIER2_SOURCE_TYPES.has(sourceType)) return 2;
+  return 3;
+}
+
+function formatAlsoOnLabel(sourceType, sourceName) {
+  if (SOURCE_LABEL_MAP[sourceType]) return SOURCE_LABEL_MAP[sourceType];
+  if (sourceName && sourceName !== sourceType) return sourceName;
+  return String(sourceType || 'Other').replace(/_/g, ' ');
+}
+
+export function expireStaleJobs(db, maxAgeDays = 14) {
+  const cutoffIso = new Date(Date.now() - Math.max(1, Number(maxAgeDays)) * 86400 * 1000).toISOString();
+  const res = db
+    .prepare("UPDATE jobs SET is_active = 0 WHERE is_active = 1 AND status = 'new' AND last_seen_at < ?")
+    .run(cutoffIso);
+  return Number(res?.changes ?? 0);
+}
+
+function attachAlsoOn(db, jobsList) {
+  if (!Array.isArray(jobsList) || jobsList.length === 0) return jobsList;
+  const ids = jobsList.map((j) => j.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db
+    .prepare(`
+      SELECT js.job_id, js.source_id, js.source_type, COALESCE(s.name, js.source_type) AS source_name, js.apply_url
+      FROM job_sources js
+      LEFT JOIN sources s ON s.id = js.source_id
+      WHERE js.job_id IN (${placeholders})
+    `)
+    .all(...ids);
+
+  const grouped = new Map();
+  for (const r of rows) {
+    if (!grouped.has(r.job_id)) grouped.set(r.job_id, []);
+    grouped.get(r.job_id).push(r);
+  }
+
+  for (const job of jobsList) {
+    const rawList = grouped.get(job.id) || [];
+    const seenLabels = new Set();
+    const primaryLabel = formatAlsoOnLabel(job.source_type, '');
+    const extras = [];
+    for (const r of rawList) {
+      if (r.source_id === job.source_id && r.source_type === job.source_type) continue;
+      const label = formatAlsoOnLabel(r.source_type, r.source_name);
+      if (label === primaryLabel && r.source_id === job.source_id) continue;
+      if (seenLabels.has(label)) continue;
+      seenLabels.add(label);
+      extras.push({ source_id: r.source_id, source_type: r.source_type, label, apply_url: r.apply_url });
+    }
+    job.also_on = extras;
+  }
+  return jobsList;
+}
+
 export function upsertJobsBatch(db, normalizedJobs, sourceId) {
   const now = new Date().toISOString();
   const profile = getProfile(db);
@@ -756,19 +899,25 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
   const seenJobIds = new Set();
   const srcMeta = sourceId ? db.prepare('SELECT tier, type FROM sources WHERE id = ?').get(sourceId) : null;
 
-  const findExisting = db.prepare('SELECT id, status, user_notes, applied_at, first_seen_at FROM jobs WHERE dedupe_hash = ? OR id = ?');
+  const findExistingByHash = db.prepare(
+    'SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at FROM jobs WHERE dedupe_hash = ? OR id = ?'
+  );
+  const findExistingByCanonical = db.prepare(
+    "SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at FROM jobs WHERE canonical_url = ? AND canonical_url != '' LIMIT 1"
+  );
   const insertJob = db.prepare(`
     INSERT INTO jobs (
-      id, dedupe_hash, external_id, source_id, source_type, title, company, company_logo,
+      id, dedupe_hash, canonical_url, external_id, source_id, source_type, title, company, company_logo,
       department, location, work_mode, seniority, employment_type, experience_min, experience_max,
       salary_min, salary_max, salary_currency, salary_period, salary_raw, is_salary_estimated,
       description_html, description_text, skills, green_flags, red_flags, visa_sponsorship,
       apply_url, company_url, posted_at, first_seen_at, last_seen_at, is_active,
       match_score, match_breakdown, status, user_notes, applied_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'new', '', NULL)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'new', '', NULL)
   `);
   const updateJob = db.prepare(`
     UPDATE jobs SET
+      canonical_url = COALESCE(NULLIF(?, ''), canonical_url),
       external_id = ?, source_id = ?, source_type = ?, title = ?, company = ?, company_logo = ?,
       department = ?, location = ?, work_mode = ?, seniority = ?, employment_type = ?,
       experience_min = ?, experience_max = ?, salary_min = ?, salary_max = ?,
@@ -777,6 +926,15 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
       visa_sponsorship = ?, apply_url = ?, company_url = ?, posted_at = COALESCE(?, posted_at),
       last_seen_at = ?, is_active = 1, match_score = ?, match_breakdown = ?
     WHERE id = ?
+  `);
+  const touchExistingJob = db.prepare('UPDATE jobs SET last_seen_at = ?, is_active = 1 WHERE id = ?');
+  const upsertJobSource = db.prepare(`
+    INSERT INTO job_sources (job_id, source_id, source_type, apply_url, seen_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(job_id, source_id) DO UPDATE SET
+      source_type = excluded.source_type,
+      apply_url = excluded.apply_url,
+      seen_at = excluded.seen_at
   `);
   const deleteFts = db.prepare('DELETE FROM jobs_fts WHERE job_id = ?');
   const insertFts = db.prepare(
@@ -787,7 +945,10 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
   try {
     for (const j of normalizedJobs) {
       const scored = scoreJobAgainstProfile(j, profile);
-      const existing = findExisting.get(j.dedupe_hash, j.id);
+      const canonicalUrl = j.canonical_url || canonicalizeApplyUrl(j.apply_url || '');
+      const existing =
+        findExistingByHash.get(j.dedupe_hash, j.id) ||
+        (canonicalUrl ? findExistingByCanonical.get(canonicalUrl) : null);
       seenJobIds.add(existing ? existing.id : j.id);
       const skillsJson = JSON.stringify(j.skills || []);
       const skillsText = (j.skills || []).join(' ');
@@ -796,6 +957,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
         insertJob.run(
           j.id,
           j.dedupe_hash,
+          canonicalUrl,
           j.external_id,
           j.source_id,
           j.source_type,
@@ -829,45 +991,64 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
           scored.score,
           JSON.stringify(scored.breakdown)
         );
+        upsertJobSource.run(j.id, j.source_id, j.source_type, j.apply_url || '', now);
         insertFts.run(j.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
         newCount++;
       } else {
-        updateJob.run(
-          j.external_id,
-          j.source_id,
-          j.source_type,
-          j.title,
-          j.company,
-          j.company_logo || '',
-          j.department || '',
-          j.location || '',
-          j.work_mode || 'unknown',
-          j.seniority || 'unknown',
-          j.employment_type || 'Full-Time',
-          j.experience_min ?? null,
-          j.experience_max ?? null,
-          j.salary_min ?? null,
-          j.salary_max ?? null,
-          j.salary_currency || 'USD',
-          j.salary_period || 'year',
-          j.salary_raw || '',
-          j.is_salary_estimated ? 1 : 0,
-          j.description_html || '',
-          j.description_text || '',
-          skillsJson,
-          JSON.stringify(j.green_flags || []),
-          JSON.stringify(j.red_flags || []),
-          j.visa_sponsorship ? 1 : 0,
-          j.apply_url,
-          j.company_url || '',
-          j.posted_at || null,
-          now,
-          scored.score,
-          JSON.stringify(scored.breakdown),
-          existing.id
-        );
-        deleteFts.run(existing.id);
-        insertFts.run(existing.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
+        if (existing.source_id && existing.source_id !== j.source_id) {
+          upsertJobSource.run(
+            existing.id,
+            existing.source_id,
+            existing.source_type || '',
+            existing.apply_url || '',
+            existing.last_seen_at || now
+          );
+        }
+        upsertJobSource.run(existing.id, j.source_id, j.source_type, j.apply_url || '', now);
+
+        const existingTier = resolveSourceTier(db, existing.source_id, existing.source_type);
+        const incomingTier = resolveSourceTier(db, j.source_id || sourceId, j.source_type);
+        if (incomingTier <= existingTier) {
+          updateJob.run(
+            canonicalUrl,
+            j.external_id,
+            j.source_id,
+            j.source_type,
+            j.title,
+            j.company,
+            j.company_logo || '',
+            j.department || '',
+            j.location || '',
+            j.work_mode || 'unknown',
+            j.seniority || 'unknown',
+            j.employment_type || 'Full-Time',
+            j.experience_min ?? null,
+            j.experience_max ?? null,
+            j.salary_min ?? null,
+            j.salary_max ?? null,
+            j.salary_currency || 'USD',
+            j.salary_period || 'year',
+            j.salary_raw || '',
+            j.is_salary_estimated ? 1 : 0,
+            j.description_html || '',
+            j.description_text || '',
+            skillsJson,
+            JSON.stringify(j.green_flags || []),
+            JSON.stringify(j.red_flags || []),
+            j.visa_sponsorship ? 1 : 0,
+            j.apply_url,
+            j.company_url || '',
+            j.posted_at || null,
+            now,
+            scored.score,
+            JSON.stringify(scored.breakdown),
+            existing.id
+          );
+          deleteFts.run(existing.id);
+          insertFts.run(existing.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
+        } else {
+          touchExistingJob.run(now, existing.id);
+        }
         updatedCount++;
       }
     }
@@ -888,6 +1069,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
       db.prepare('UPDATE sources SET total_active_jobs = ? WHERE id = ?').run(cnt?.c ?? 0, sourceId);
     }
 
+    expireStaleJobs(db, 14);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -1094,7 +1276,7 @@ export function queryJobs(db, params = {}) {
            j.company_logo, j.department, j.location, j.work_mode, j.seniority, j.employment_type,
            j.experience_min, j.experience_max, j.salary_min, j.salary_max, j.salary_currency,
            j.salary_period, j.salary_raw, j.is_salary_estimated, j.description_text, j.skills,
-           j.green_flags, j.red_flags, j.visa_sponsorship, j.apply_url, j.company_url,
+           j.green_flags, j.red_flags, j.visa_sponsorship, j.apply_url, j.canonical_url, j.company_url,
            j.posted_at, j.first_seen_at, j.last_seen_at, j.is_active, j.match_score,
            j.match_breakdown, j.status, j.user_notes, j.applied_at
     FROM jobs j
@@ -1138,8 +1320,9 @@ export function queryJobs(db, params = {}) {
     `)
     .all();
 
+  const jobs = attachAlsoOn(db, rows.map((r) => hydrateJobRow(r, false)));
   return {
-    jobs: rows.map((r) => hydrateJobRow(r, false)),
+    jobs,
     total: Number(totalRow?.total ?? 0),
     stats: {
       totalAllActive: Number(stats?.totalAllActive ?? 0),
@@ -1162,7 +1345,9 @@ export function queryJobs(db, params = {}) {
 
 export function getJobById(db, id) {
   const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
-  return hydrateJobRow(row, true);
+  const job = hydrateJobRow(row, true);
+  if (job) attachAlsoOn(db, [job]);
+  return job;
 }
 
 export function updateJobStatus(db, id, { status, user_notes }) {

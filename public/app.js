@@ -564,6 +564,7 @@ function renderJobsList() {
               <span>${esc(job.location || 'Unspecified')}</span>
               <span class="job-sep">/</span>
               <span class="mono">${esc(job.source_type)}</span>
+              ${Array.isArray(job.also_on) && job.also_on.length ? `<span class="badge-tag mono" title="${esc(job.also_on.map((x) => x.label).join(', '))}">also on: ${esc(job.also_on.map((x) => x.label).slice(0, 3).join(', '))}</span>` : ''}
               ${job.department ? `<span class="job-sep">/</span><span>${esc(job.department)}</span>` : ''}
             </div>
 
@@ -708,7 +709,10 @@ async function openJobDrawer(jobId) {
   const { job, tailoring } = data;
   const locTier = detectJobPriorityTier(job);
 
-  $('#d-source-badge').textContent = job.source_type;
+  $('#d-source-badge').textContent =
+    Array.isArray(job.also_on) && job.also_on.length
+      ? `${job.source_type} (also on: ${job.also_on.map((x) => x.label).join(', ')})`
+      : job.source_type;
   $('#d-company').textContent = job.company;
   $('#d-title').textContent = job.title;
   $('#d-apply-link').href = job.apply_url;

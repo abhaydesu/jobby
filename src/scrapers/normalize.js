@@ -157,8 +157,82 @@ function normalizeDedupePart(val = '') {
     .trim();
 }
 
+const CITY_ALIAS_RULES = [
+  { rx: /\b(?:bangalore|bengaluru urban|bangalore urban|bengaluru|blr)\b/i, canonical: 'bengaluru' },
+  { rx: /\b(?:gurgaon|gurugram)\b/i, canonical: 'gurugram' },
+  { rx: /\b(?:navi mumbai|bombay|mumbai)\b/i, canonical: 'mumbai' },
+  { rx: /\b(?:new delhi|delhi ncr|greater noida|noida|ncr|delhi)\b/i, canonical: 'delhi ncr' },
+  { rx: /\b(?:madras|chennai)\b/i, canonical: 'chennai' },
+  { rx: /\b(?:secunderabad|hyderabad|hyd)\b/i, canonical: 'hyderabad' },
+  { rx: /\b(?:poona|pune)\b/i, canonical: 'pune' },
+  { rx: /\b(?:calcutta|kolkata)\b/i, canonical: 'kolkata' },
+  { rx: /\b(?:trivandrum|thiruvananthapuram)\b/i, canonical: 'thiruvananthapuram' },
+  { rx: /\b(?:cochin|kochi)\b/i, canonical: 'kochi' },
+];
+
+export function normalizeCityAliases(location = '') {
+  const cleaned = normalizeDedupePart(location);
+  for (const rule of CITY_ALIAS_RULES) {
+    if (rule.rx.test(cleaned)) {
+      return rule.canonical;
+    }
+  }
+  return cleaned;
+}
+
+const TRACKING_QUERY_PARAMS = new Set([
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+  'utm_id',
+  'ref',
+  'refid',
+  'referrer',
+  'trackingid',
+  'trk',
+  'trkcampaign',
+  'fbclid',
+  'gclid',
+  'dclid',
+  'mc_cid',
+  'mc_eid',
+  'source',
+  'src',
+  '_hsenc',
+  '_hsmi',
+  'lipi',
+  'midtoken',
+  'midsig',
+]);
+
+export function canonicalizeApplyUrl(rawUrl = '') {
+  const input = String(rawUrl || '').trim();
+  if (!input) return '';
+  try {
+    const parsed = new URL(input);
+    if (!/^https?:$/i.test(parsed.protocol)) return '';
+    parsed.protocol = 'https:';
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.hash = '';
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      const lower = key.toLowerCase();
+      if (lower.startsWith('utm_') || TRACKING_QUERY_PARAMS.has(lower)) {
+        parsed.searchParams.delete(key);
+      }
+    }
+    parsed.searchParams.sort();
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return parsed.toString();
+  } catch {
+    return input.replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase();
+  }
+}
+
 export function computeDedupeHash(company, title, location = '') {
-  const locNorm = normalizeDedupePart(location).split(' ').slice(0, 3).join(' ');
+  const cityNorm = normalizeCityAliases(location);
+  const locNorm = cityNorm.split(' ').slice(0, 3).join(' ');
   const rawKey = `${normalizeDedupePart(company)}::${normalizeDedupePart(title)}::${locNorm}`;
   return crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32);
 }
@@ -236,11 +310,13 @@ export function normalizeJobPayload({
 
   const extId = String(externalId || applyUrl || `${cleanCompany}-${cleanTitle}`);
   const id = makeJobId(sourceId, extId);
+  const canonicalUrl = canonicalizeApplyUrl(applyUrl);
   const dedupeHash = computeDedupeHash(cleanCompany, cleanTitle, workMode === 'remote' ? 'remote' : cleanLocation);
 
   return {
     id,
     dedupe_hash: dedupeHash,
+    canonical_url: canonicalUrl,
     external_id: extId,
     source_id: sourceId,
     source_type: sourceType,
