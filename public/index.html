@@ -33,6 +33,9 @@
             <button class="nav-tab active" data-tab="feed" role="tab">
               Feed <span class="nav-badge mono" id="badge-feed">0</span>
             </button>
+            <button class="nav-tab" data-tab="fresh" role="tab">
+              Fresh Drops <span class="nav-badge mono" id="badge-fresh">0</span>
+            </button>
             <button class="nav-tab" data-tab="crm" role="tab">
               Pipeline <span class="nav-badge mono" id="badge-crm">0</span>
             </button>
@@ -297,6 +300,45 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="tab-panel" id="panel-fresh">
+        <div class="section-head">
+          <div>
+            <h2>Fresh Drops — Apply Early</h2>
+            <p class="muted">Newly discovered intern and new-grad openings ordered by when Jobby first spotted them.</p>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="btn-refresh-fresh">Refresh</button>
+            <button class="btn btn-primary" id="btn-fresh-scrape">Scrape Now</button>
+          </div>
+        </div>
+
+        <div class="feed-bar" style="margin-bottom:14px; flex-wrap:wrap; gap:12px;">
+          <div class="btn-row" style="flex-wrap:wrap; gap:10px; align-items:center;">
+            <div class="segmented" id="fresh-window-seg">
+              <button class="seg-btn" data-hours="6" type="button">Last 6h</button>
+              <button class="seg-btn active" data-hours="24" type="button">Last 24h</button>
+              <button class="seg-btn" data-hours="48" type="button">Last 48h</button>
+              <button class="seg-btn" data-hours="168" type="button">Last 7d</button>
+            </div>
+            <div class="segmented" id="fresh-loc-seg">
+              <button class="seg-btn active" data-loc="" type="button">All</button>
+              <button class="seg-btn" data-loc="bangalore" type="button">Bengaluru</button>
+              <button class="seg-btn" data-loc="remote" type="button">Remote</button>
+            </div>
+            <select id="fresh-source-type" class="compact-input" style="min-width:170px;">
+              <option value="">All Sources</option>
+            </select>
+            <label class="check-row" style="margin:0;">
+              <input type="checkbox" id="fresh-untriaged-only" checked />
+              <span>Untriaged only</span>
+            </label>
+          </div>
+          <div class="feed-count mono" id="fresh-count-text">Loading fresh openings...</div>
+        </div>
+
+        <div class="jobs-stack" id="fresh-jobs-list"></div>
       </section>
 
       <!-- TAB 2: PIPELINE CRM KANBAN -->

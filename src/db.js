@@ -1107,6 +1107,7 @@ export function queryJobs(db, params = {}) {
     minSalary = 0,
     status = '',
     maxAgeDays = 0,
+    firstSeenHours = 0,
     visaOnly = false,
     hasSalaryOnly = false,
     hideDismissed = true,
@@ -1248,6 +1249,12 @@ export function queryJobs(db, params = {}) {
     args.push(cutoff);
   }
 
+  if (Number(firstSeenHours) > 0) {
+    const cutoff = new Date(Date.now() - Number(firstSeenHours) * 3600 * 1000).toISOString();
+    where.push('j.first_seen_at >= ?');
+    args.push(cutoff);
+  }
+
   if (visaOnly) {
     where.push('j.visa_sponsorship = 1');
   }
@@ -1271,6 +1278,7 @@ export function queryJobs(db, params = {}) {
     match: `${priorityOrderCase} ASC, j.match_score DESC, COALESCE(j.posted_at, j.first_seen_at) DESC`,
     score: 'j.match_score DESC, COALESCE(j.posted_at, j.first_seen_at) DESC',
     newest: `${priorityOrderCase} ASC, COALESCE(j.posted_at, j.first_seen_at) DESC, j.match_score DESC`,
+    first_seen: 'j.first_seen_at DESC, j.match_score DESC',
     salary: 'COALESCE(j.salary_max, j.salary_min, 0) DESC, j.match_score DESC',
     company: 'j.company ASC, j.match_score DESC',
   };

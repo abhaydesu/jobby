@@ -24,6 +24,14 @@ const state = {
   },
   jobs: [],
   total: 0,
+  fresh: {
+    hours: 24,
+    locationPriority: '',
+    sourceType: '',
+    untriagedOnly: true,
+    jobs: [],
+    total: 0,
+  },
   stats: {},
   facets: {},
   topSkills: [],
@@ -196,11 +204,12 @@ function switchTab(tabName) {
   $$('.nav-tab').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabName));
   $$('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === `panel-${tabName}`));
 
-  if (tabName !== 'feed' && state.activeJobId) {
+  if (tabName !== 'feed' && tabName !== 'fresh' && state.activeJobId) {
     closeDrawer();
   }
 
   if (tabName === 'feed') loadJobs();
+  if (tabName === 'fresh') loadFreshJobs();
   if (tabName === 'crm') loadCrmBoard();
   if (tabName === 'scraper') loadScraperConsole();
   if (tabName === 'profile') loadProfile();
@@ -417,6 +426,7 @@ function renderStatsAndFacets() {
   $('#kpi-tracked').textContent = (s.trackedCount || 0).toLocaleString();
 
   $('#badge-feed').textContent = (s.totalActive || 0).toLocaleString();
+  if ($('#badge-fresh')) $('#badge-fresh').textContent = (s.new24h || 0).toLocaleString();
   $('#badge-crm').textContent = (s.trackedCount || 0).toLocaleString();
   $('#badge-sources').textContent = s.enabledSources || 0;
 
@@ -428,6 +438,13 @@ function renderStatsAndFacets() {
   }
   select.innerHTML = options.join('');
   select.value = currentVal;
+
+  const freshSelect = $('#fresh-source-type');
+  if (freshSelect) {
+    const freshVal = state.fresh.sourceType;
+    freshSelect.innerHTML = options.join('');
+    freshSelect.value = freshVal;
+  }
 }
 
 function syncRoleScopeUI(val) {
@@ -499,20 +516,25 @@ function updateInspectorNavButtons() {
 }
 
 async function optimisticToggleSave(jobId) {
-  const job = state.jobs.find((j) => j.id === jobId);
+  const job = state.jobs.find((j) => j.id === jobId) || state.fresh.jobs.find((j) => j.id === jobId);
   if (!job) return;
   const prevStatus = job.status || 'new';
   const nextStatus = prevStatus === 'saved' ? 'new' : 'saved';
   job.status = nextStatus;
 
-  const btn = document.querySelector(`.act-save[data-id="${CSS.escape(jobId)}"]`);
-  if (btn) btn.textContent = nextStatus === 'saved' ? 'Saved' : 'Save';
+  document.querySelectorAll(`.act-save[data-id="${CSS.escape(jobId)}"]`).forEach((btn) => {
+    btn.textContent = nextStatus === 'saved' ? 'Saved' : 'Save';
+  });
   if (state.activeJobId === jobId) $('#d-status-select').value = nextStatus;
 
   await api(`/api/jobs/${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
     body: JSON.stringify({ status: nextStatus }),
   });
+
+  if (state.tab === 'fresh' && state.fresh.untriagedOnly) {
+    loadFreshJobs();
+  }
 
   toast(
     nextStatus === 'saved' ? `Saved ${job.title}` : `Unsaved ${job.title}`,
@@ -523,19 +545,27 @@ async function optimisticToggleSave(jobId) {
         body: JSON.stringify({ status: prevStatus }),
       });
       loadJobs();
+      if (state.tab === 'fresh') loadFreshJobs();
     }
   );
 }
 
 async function optimisticDismissJob(jobId) {
   const idx = state.jobs.findIndex((j) => j.id === jobId);
-  const job = idx >= 0 ? state.jobs[idx] : null;
+  const freshIdx = state.fresh.jobs.findIndex((j) => j.id === jobId);
+  const job = (idx >= 0 ? state.jobs[idx] : null) || (freshIdx >= 0 ? state.fresh.jobs[freshIdx] : null);
   const prevStatus = job?.status || 'new';
 
   await api(`/api/jobs/${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
     body: JSON.stringify({ status: 'dismissed' }),
   });
+
+  if (freshIdx >= 0) {
+    state.fresh.jobs.splice(freshIdx, 1);
+    state.fresh.total = Math.max(0, state.fresh.total - 1);
+    if (state.tab === 'fresh') renderFreshJobsList();
+  }
 
   if (idx >= 0 && state.filters.hideDismissed) {
     state.jobs.splice(idx, 1);
@@ -564,8 +594,97 @@ async function optimisticDismissJob(jobId) {
         body: JSON.stringify({ status: prevStatus }),
       });
       loadJobs();
+      if (state.tab === 'fresh') loadFreshJobs();
     }
   );
+}
+
+function renderJobRowHtml(job, idx, { isFocused = false, ageField = 'posted_at' } = {}) {
+  const stipendPill = fmtStipendPill(job);
+  const bd = job.match_breakdown || {};
+  const locTier = detectJobPriorityTier(job);
+  const matchedSet = new Set([...(bd.matchedPrimary || []), ...(bd.matchedSecondary || [])].map((x) => x.toLowerCase()));
+  const isSeen = state.seenIds.has(job.id);
+
+  const skillsHtml = (job.skills || [])
+    .slice(0, 7)
+    .map((sk) => {
+      const cls = matchedSet.has(sk.toLowerCase()) ? 'matched' : '';
+      return `<span class="skill-chip ${cls}">${esc(sk)}</span>`;
+    })
+    .join('');
+
+  const saveLabel = job.status === 'saved' ? 'Saved' : job.status !== 'new' ? job.status : 'Save';
+  const ageVal = ageField === 'first_seen_at' ? `new ${timeAgo(job.first_seen_at)}` : timeAgo(job.posted_at || job.first_seen_at);
+
+  return `
+    <article class="job-row spotlight-card ${isFocused ? 'focused' : ''} ${isSeen ? 'seen' : ''}" data-job-id="${esc(job.id)}" data-idx="${idx}">
+      <div class="score-box">
+        <div class="score-top">
+          <span class="dot ${scoreDotClass(job.match_score)}"></span>
+          <span class="score-val mono">${job.match_score}</span>
+        </div>
+        <span class="score-sub mono">match</span>
+      </div>
+
+      <div class="job-main">
+        <div class="job-eyebrow">
+          <span class="job-company">${esc(job.company)}</span>
+          <span class="job-sep">/</span>
+          <span>${esc(job.location || 'Unspecified')}</span>
+          <span class="job-sep">/</span>
+          <span class="mono">${esc(job.source_type)}</span>
+          ${Array.isArray(job.also_on) && job.also_on.length ? `<span class="badge-tag mono" title="${esc(job.also_on.map((x) => x.label).join(', '))}">also on: ${esc(job.also_on.map((x) => x.label).slice(0, 3).join(', '))}</span>` : ''}
+          ${job.department ? `<span class="job-sep">/</span><span>${esc(job.department)}</span>` : ''}
+        </div>
+
+        <div class="job-title-row">
+          <h3 class="job-title">${esc(job.title)}</h3>
+          ${renderPriorityPill(locTier)}
+          ${renderRolePill(job.seniority)}
+          ${stipendPill}
+        </div>
+
+        ${skillsHtml ? `<div class="skills-row">${skillsHtml}</div>` : ''}
+        <div class="match-reason-line">${buildMatchReasonLine(job)}</div>
+      </div>
+
+      <div class="job-actions">
+        <span class="posted-age mono">${esc(ageVal)}</span>
+        <div class="action-pair">
+          <button class="btn btn-secondary btn-sm act-save" data-id="${esc(job.id)}">${esc(saveLabel)}</button>
+          <a class="btn btn-primary btn-sm act-apply" href="${esc(job.apply_url)}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+        </div>
+        <button class="btn btn-ghost btn-sm act-dismiss" data-id="${esc(job.id)}">Dismiss</button>
+      </div>
+    </article>`;
+}
+
+function bindJobListHandlers(container, { focusable = false } = {}) {
+  container.querySelectorAll('.job-row').forEach((row) => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.act-save, .act-apply, .act-dismiss')) return;
+      if (focusable) {
+        state.focusedIndex = Number(row.dataset.idx || 0);
+        setFocusedIndex(state.focusedIndex, { scroll: false });
+      }
+      openJobDrawer(row.dataset.jobId);
+    });
+  });
+
+  container.querySelectorAll('.act-save').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      optimisticToggleSave(btn.dataset.id);
+    });
+  });
+
+  container.querySelectorAll('.act-dismiss').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      optimisticDismissJob(btn.dataset.id);
+    });
+  });
 }
 
 function renderJobsList() {
@@ -592,90 +711,10 @@ function renderJobsList() {
   }
 
   list.innerHTML = state.jobs
-    .map((job, idx) => {
-      const stipendPill = fmtStipendPill(job);
-      const bd = job.match_breakdown || {};
-      const locTier = detectJobPriorityTier(job);
-      const matchedSet = new Set([...(bd.matchedPrimary || []), ...(bd.matchedSecondary || [])].map((x) => x.toLowerCase()));
-      const isFocused = idx === state.focusedIndex;
-      const isSeen = state.seenIds.has(job.id);
-
-      const skillsHtml = (job.skills || [])
-        .slice(0, 7)
-        .map((sk) => {
-          const cls = matchedSet.has(sk.toLowerCase()) ? 'matched' : '';
-          return `<span class="skill-chip ${cls}">${esc(sk)}</span>`;
-        })
-        .join('');
-
-      const saveLabel = job.status === 'saved' ? 'Saved' : job.status !== 'new' ? job.status : 'Save';
-
-      return `
-        <article class="job-row spotlight-card ${isFocused ? 'focused' : ''} ${isSeen ? 'seen' : ''}" data-job-id="${esc(job.id)}" data-idx="${idx}">
-          <div class="score-box">
-            <div class="score-top">
-              <span class="dot ${scoreDotClass(job.match_score)}"></span>
-              <span class="score-val mono">${job.match_score}</span>
-            </div>
-            <span class="score-sub mono">match</span>
-          </div>
-
-          <div class="job-main">
-            <div class="job-eyebrow">
-              <span class="job-company">${esc(job.company)}</span>
-              <span class="job-sep">/</span>
-              <span>${esc(job.location || 'Unspecified')}</span>
-              <span class="job-sep">/</span>
-              <span class="mono">${esc(job.source_type)}</span>
-              ${Array.isArray(job.also_on) && job.also_on.length ? `<span class="badge-tag mono" title="${esc(job.also_on.map((x) => x.label).join(', '))}">also on: ${esc(job.also_on.map((x) => x.label).slice(0, 3).join(', '))}</span>` : ''}
-              ${job.department ? `<span class="job-sep">/</span><span>${esc(job.department)}</span>` : ''}
-            </div>
-
-            <div class="job-title-row">
-              <h3 class="job-title">${esc(job.title)}</h3>
-              ${renderPriorityPill(locTier)}
-              ${renderRolePill(job.seniority)}
-              ${stipendPill}
-            </div>
-
-            ${skillsHtml ? `<div class="skills-row">${skillsHtml}</div>` : ''}
-            <div class="match-reason-line">${buildMatchReasonLine(job)}</div>
-          </div>
-
-          <div class="job-actions">
-            <span class="posted-age mono">${timeAgo(job.posted_at || job.first_seen_at)}</span>
-            <div class="action-pair">
-              <button class="btn btn-secondary btn-sm act-save" data-id="${esc(job.id)}">${esc(saveLabel)}</button>
-              <a class="btn btn-primary btn-sm act-apply" href="${esc(job.apply_url)}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
-            </div>
-            <button class="btn btn-ghost btn-sm act-dismiss" data-id="${esc(job.id)}">Dismiss</button>
-          </div>
-        </article>`;
-    })
+    .map((job, idx) => renderJobRowHtml(job, idx, { isFocused: idx === state.focusedIndex }))
     .join('');
 
-  $$('.job-row').forEach((row) => {
-    row.addEventListener('click', (e) => {
-      if (e.target.closest('.act-save, .act-apply, .act-dismiss')) return;
-      state.focusedIndex = Number(row.dataset.idx || 0);
-      setFocusedIndex(state.focusedIndex, { scroll: false });
-      openJobDrawer(row.dataset.jobId);
-    });
-  });
-
-  $$('.act-save').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      optimisticToggleSave(btn.dataset.id);
-    });
-  });
-
-  $$('.act-dismiss').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      optimisticDismissJob(btn.dataset.id);
-    });
-  });
+  bindJobListHandlers(list, { focusable: true });
 
   const totalPages = Math.max(1, Math.ceil(state.total / f.limit));
   const curPage = Math.floor(f.offset / f.limit) + 1;
@@ -688,6 +727,55 @@ function renderJobsList() {
   } else {
     pBar.classList.add('hidden');
   }
+}
+
+async function loadFreshJobs() {
+  const fr = state.fresh;
+  const qs = new URLSearchParams({
+    firstSeenHours: String(fr.hours || 24),
+    seniority: 'intern,junior',
+    roleCategory: 'tech',
+    locationPriority: fr.locationPriority || '',
+    sourceType: fr.sourceType || '',
+    status: fr.untriagedOnly ? 'new' : '',
+    hideDismissed: 'true',
+    sortBy: 'first_seen',
+    limit: '60',
+    offset: '0',
+  });
+  const data = await api(`/api/jobs?${qs.toString()}`);
+  state.fresh.jobs = data.jobs || [];
+  state.fresh.total = data.total || 0;
+  if (data.stats && $('#badge-fresh')) {
+    $('#badge-fresh').textContent = (data.stats.new24h || 0).toLocaleString();
+  }
+  renderFreshJobsList();
+}
+
+function renderFreshJobsList() {
+  const list = $('#fresh-jobs-list');
+  const countEl = $('#fresh-count-text');
+  if (!list) return;
+  const jobs = state.fresh.jobs || [];
+  if (countEl) {
+    countEl.textContent = `${state.fresh.total.toLocaleString()} newly discovered in last ${state.fresh.hours}h`;
+  }
+  if (jobs.length === 0) {
+    list.innerHTML = `
+      <div class="panel-box" style="text-align:center; padding: 48px 24px; border-bottom: 1px solid var(--border);">
+        <h3>No new openings in this window</h3>
+        <p class="muted small">Expand the time window (Last 48h / 7d) or trigger a fresh scrape to discover new roles.</p>
+        <div class="btn-row" style="justify-content:center; margin-top: 14px;">
+          <button class="btn btn-primary" id="fresh-empty-scrape">Scrape Now</button>
+        </div>
+      </div>`;
+    $('#fresh-empty-scrape')?.addEventListener('click', () => triggerScrape('all'));
+    return;
+  }
+  list.innerHTML = jobs
+    .map((job, idx) => renderJobRowHtml(job, idx, { ageField: 'first_seen_at' }))
+    .join('');
+  bindJobListHandlers(list, { focusable: false });
 }
 
 async function refreshSkillCloud() {
@@ -1449,7 +1537,16 @@ function handleSseEvent(evt) {
     toast(`Scrape finished: ${evt.data.newJobs} new, ${evt.data.updatedJobs} updated`);
     loadJobs();
     refreshSkillCloud();
+    if (state.tab === 'fresh') loadFreshJobs();
     if (state.tab === 'scraper') loadScraperConsole();
+  }
+
+  if (evt.type === 'ingest:complete' || evt.type === 'import:complete') {
+    if (evt.newCount > 0) {
+      toast(`+${evt.newCount} new job${evt.newCount === 1 ? '' : 's'} added — check Fresh Drops`);
+    }
+    loadJobs();
+    if (state.tab === 'fresh') loadFreshJobs();
   }
 
   if (evt.type === 'scheduler:updated') {
@@ -1725,6 +1822,31 @@ function bindEvents() {
 
   $('#btn-refresh-crm').addEventListener('click', loadCrmBoard);
   $('#btn-refresh-analytics').addEventListener('click', loadAnalytics);
+
+  $('#btn-refresh-fresh')?.addEventListener('click', loadFreshJobs);
+  $('#btn-fresh-scrape')?.addEventListener('click', () => triggerScrape('all'));
+  $$('#fresh-window-seg .seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('#fresh-window-seg .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      state.fresh.hours = Number(btn.dataset.hours || 24);
+      loadFreshJobs();
+    });
+  });
+  $$('#fresh-loc-seg .seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('#fresh-loc-seg .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      state.fresh.locationPriority = btn.dataset.loc || '';
+      loadFreshJobs();
+    });
+  });
+  $('#fresh-source-type')?.addEventListener('change', (e) => {
+    state.fresh.sourceType = e.target.value;
+    loadFreshJobs();
+  });
+  $('#fresh-untriaged-only')?.addEventListener('change', (e) => {
+    state.fresh.untriagedOnly = e.target.checked;
+    loadFreshJobs();
+  });
 
   $('#btn-save-sched').addEventListener('click', async () => {
     await api('/api/scrape/schedule', {

@@ -162,6 +162,7 @@ export function createApp({ dbPath } = {}) {
           minSalary: Number(sp.get('minSalary') || 0),
           status: sp.get('status') || '',
           maxAgeDays: Number(sp.get('maxAgeDays') || 0),
+          firstSeenHours: Number(sp.get('firstSeenHours') || 0),
           visaOnly: sp.get('visaOnly') === 'true' || sp.get('visaOnly') === '1',
           hasSalaryOnly: sp.get('hasSalaryOnly') === 'true' || sp.get('hasSalaryOnly') === '1',
           hideDismissed: sp.get('hideDismissed') !== 'false',

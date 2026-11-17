@@ -1069,5 +1069,11 @@ test('NLP additions: SDE-2 mid-level cue, eligibility penalty & batch filter, an
   const filtered2026 = queryJobs(db, { batch: '2026' });
   assert.equal(filtered2026.total, 1);
   assert.equal(filtered2026.jobs[0].external_id, 'elig-2026');
+
+  const oldFirstSeen = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  db.prepare('UPDATE jobs SET first_seen_at = ? WHERE external_id = ?').run(oldFirstSeen, 'elig-2025');
+  const freshOnly = queryJobs(db, { firstSeenHours: 24, sortBy: 'first_seen' });
+  assert.equal(freshOnly.total, 1);
+  assert.equal(freshOnly.jobs[0].external_id, 'elig-2026');
   db.close();
 });
