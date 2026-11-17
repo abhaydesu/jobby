@@ -60,12 +60,23 @@ html[data-theme="light"] {
 body {
   margin: 0;
   font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 36% at 50% -10%, rgba(59, 130, 246, 0.08), transparent 70%),
+    radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px;
+  background-attachment: fixed;
   color: var(--text);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
+}
+
+html[data-theme="light"] body {
+  background-image:
+    radial-gradient(ellipse 80% 36% at 50% -10%, rgba(37, 99, 235, 0.06), transparent 70%),
+    radial-gradient(rgba(15, 23, 42, 0.045) 1px, transparent 1px);
 }
 
 .mono {
@@ -346,6 +357,45 @@ textarea {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+
+input[type="file"] {
+  width: 100%;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 5px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent-border);
+}
+
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -413,12 +463,28 @@ input[type="range"] {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--surface-1);
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.05) inset, var(--shadow-card);
   overflow: hidden;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, transform 0.16s ease;
 }
 
-.arch-cell:hover { border-color: var(--border-strong); }
+.arch-cell:hover {
+  border-color: var(--border-strong);
+}
+
+.fresh-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 14px 18px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-1);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.05) inset, var(--shadow-card);
+}
 
 .arch-span-2 { grid-column: span 2; }
 .arch-stat {
@@ -757,14 +823,16 @@ input[type="range"] {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-1);
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, var(--shadow-card);
   cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+  overflow: hidden;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.16s ease;
 }
 
 .job-row:hover {
   background: var(--surface-hover);
   border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
 .job-row.focused {

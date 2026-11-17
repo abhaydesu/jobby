@@ -314,20 +314,20 @@
           </div>
         </div>
 
-        <div class="feed-bar" style="margin-bottom:14px; flex-wrap:wrap; gap:12px;">
-          <div class="btn-row" style="flex-wrap:wrap; gap:10px; align-items:center;">
-            <div class="segmented" id="fresh-window-seg">
+        <div class="fresh-toolbar">
+          <div class="btn-row">
+            <div class="segmented-bar" id="fresh-window-seg">
               <button class="seg-btn" data-hours="6" type="button">Last 6h</button>
               <button class="seg-btn active" data-hours="24" type="button">Last 24h</button>
               <button class="seg-btn" data-hours="48" type="button">Last 48h</button>
               <button class="seg-btn" data-hours="168" type="button">Last 7d</button>
             </div>
-            <div class="segmented" id="fresh-loc-seg">
+            <div class="segmented-bar" id="fresh-loc-seg">
               <button class="seg-btn active" data-loc="" type="button">All</button>
               <button class="seg-btn" data-loc="bangalore" type="button">Bengaluru</button>
               <button class="seg-btn" data-loc="remote" type="button">Remote</button>
             </div>
-            <select id="fresh-source-type" class="compact-input" style="min-width:170px;">
+            <select id="fresh-source-type" class="compact-input" style="width:auto; min-width:175px;">
               <option value="">All Sources</option>
             </select>
             <label class="check-row" style="margin:0;">
