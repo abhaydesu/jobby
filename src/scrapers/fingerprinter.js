@@ -103,6 +103,35 @@ const ATS_PATTERNS = [
   },
 ];
 
+export function detectAllAtsFromText(text = '') {
+  const results = [];
+  const seen = new Set();
+  const str = String(text || '');
+  const urlMatches = str.match(/https?:\/\/[^\s"'<>)\]]+/gi) || [];
+  const targets = [...urlMatches, str];
+
+  for (const chunk of targets) {
+    for (const pat of ATS_PATTERNS) {
+      const m = pat.rx.exec(chunk);
+      if (!m) continue;
+      const rawSlug =
+        m[2] && pat.type === 'oracle_hcm'
+          ? `${m[1]}::${m[2]}`
+          : pat.type === 'eightfold'
+            ? m[2] || m[3] || m[1]
+            : m[1] || m[2] || m[3] || m[0];
+      const cleanSlug = String(rawSlug || '').replace(/\/+$/, '');
+      if (!cleanSlug || ['embed', 'api', 'v1', 'v2', 'assets', 'static'].includes(cleanSlug.toLowerCase())) continue;
+      const key = `${pat.type}::${cleanSlug.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const matchedUrl = /^https?:\/\//i.test(chunk) ? chunk.replace(/[.,;)\]]+$/, '') : /^https?:\/\//i.test(m[0]) ? m[0] : '';
+      results.push({ type: pat.type, slug: cleanSlug, url: matchedUrl });
+    }
+  }
+  return results;
+}
+
 export function detectAtsFromText(text = '') {
   for (const pat of ATS_PATTERNS) {
     const m = pat.rx.exec(text);

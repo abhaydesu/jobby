@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { getSetting, setSetting } from './db.js';
 import { scrapeSingleSource, runConcurrentPool } from './scrapers/index.js';
+import { scanJobsForAtsCandidates, verifyPendingCandidates } from './scrapers/autodiscover.js';
 
 export class ScrapeScheduler extends EventEmitter {
   constructor(db) {
@@ -160,9 +161,16 @@ export class ScrapeScheduler extends EventEmitter {
         return res;
       });
 
+      const activeJobs = this.db
+        .prepare('SELECT source_id, source_type, company, apply_url, company_url, description_text FROM jobs WHERE is_active = 1')
+        .all();
+      scanJobsForAtsCandidates(this.db, activeJobs, label);
+      const promoted = await verifyPendingCandidates(this.db, { limit: 3 }).catch(() => []);
+
       const summary = {
         ...this.currentRun,
         finishedAt: new Date().toISOString(),
+        promotedCandidates: promoted.length,
         results,
       };
       this.emit('event', { type: 'scrape:complete', data: summary });

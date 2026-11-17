@@ -161,6 +161,21 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
       duration_ms INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS source_candidates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      board_token TEXT NOT NULL,
+      url TEXT NOT NULL,
+      tier INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      discovered_from TEXT DEFAULT '',
+      jobs_found INTEGER NOT NULL DEFAULT 0,
+      last_checked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_type_token ON source_candidates(type, board_token);
   `);
 
   // Seed default profile if empty
@@ -321,6 +336,124 @@ export function getSourcesHealth(db) {
       ORDER BY COALESCE(h.error_streak, 0) DESC, s.enabled ASC, s.tier ASC, s.name ASC
     `)
     .all();
+}
+
+export function buildConfigForAts(type, boardToken, url = '', name = '') {
+  const token = String(boardToken || '').trim();
+  if (type === 'workday') {
+    const m = /^([a-zA-Z0-9_-]+)\.wd(\d+)\.myworkdayjobs\.com\/(.+)$/i.exec(token);
+    if (m) {
+      const parts = m[3].split('/').filter(Boolean);
+      const site = parts.length > 1 && /^[a-z]{2}(?:-[A-Z]{2})?$/i.test(parts[0]) ? parts[1] : parts[0];
+      return { tenant: m[1], wdNum: Number(m[2]), site, companyName: name || m[1] };
+    }
+  }
+  if (type === 'oracle_hcm' && token.includes('::')) {
+    const [host, site] = token.split('::');
+    return { host, site, companyName: name || host.split('.')[0] };
+  }
+  if (type === 'teamtailor') {
+    return { host: token, companyName: name || token.split('.')[0] };
+  }
+  if (
+    ['greenhouse', 'ashby', 'lever', 'smartrecruiters', 'workable', 'recruitee', 'rippling', 'pinpoint', 'personio'].includes(type)
+  ) {
+    return { slug: token, companyName: name || token };
+  }
+  return { slug: token, url, companyName: name || token };
+}
+
+export function upsertSourceCandidate(db, { name, type, boardToken, url = '', tier = 1, discoveredFrom = '' }) {
+  const cleanType = String(type || '').trim().toLowerCase();
+  const cleanToken = String(boardToken || '').trim();
+  if (!cleanType || !cleanToken) return { inserted: false, candidate: null };
+
+  const cleanName = String(name || cleanToken.replace(/[-_]+/g, ' ')).trim().slice(0, 80);
+  const candidateId = `${cleanType}-${cleanToken.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)}`;
+  const cfg = buildConfigForAts(cleanType, cleanToken, url, cleanName);
+
+  const existingSources = db.prepare('SELECT id, config FROM sources WHERE type = ? OR id = ?').all(cleanType, candidateId);
+  const tokenLower = cleanToken.toLowerCase();
+  for (const s of existingSources) {
+    if (s.id === candidateId) return { inserted: false, alreadyActive: true, candidate: null };
+    const sc = safeJsonParse(s.config, {});
+    if (sc.slug && sc.slug.toLowerCase() === tokenLower) return { inserted: false, alreadyActive: true, candidate: null };
+    if (
+      cleanType === 'workday' &&
+      sc.tenant &&
+      cfg.tenant &&
+      sc.tenant.toLowerCase() === cfg.tenant.toLowerCase() &&
+      sc.site?.toLowerCase() === cfg.site?.toLowerCase()
+    ) {
+      return { inserted: false, alreadyActive: true, candidate: null };
+    }
+    if (
+      cleanType === 'oracle_hcm' &&
+      sc.host?.toLowerCase() === cfg.host?.toLowerCase() &&
+      sc.site?.toLowerCase() === cfg.site?.toLowerCase()
+    ) {
+      return { inserted: false, alreadyActive: true, candidate: null };
+    }
+    if (cleanType === 'teamtailor' && sc.host?.toLowerCase() === cfg.host?.toLowerCase()) {
+      return { inserted: false, alreadyActive: true, candidate: null };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const res = db
+    .prepare(`
+      INSERT OR IGNORE INTO source_candidates (id, name, type, board_token, url, tier, status, discovered_from, jobs_found, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?)
+    `)
+    .run(candidateId, cleanName, cleanType, cleanToken, url || '', tier, discoveredFrom || '', now);
+
+  const row = db.prepare('SELECT * FROM source_candidates WHERE id = ?').get(candidateId);
+  return { inserted: Number(res?.changes ?? 0) > 0, alreadyActive: false, candidate: row };
+}
+
+export function getSourceCandidates(db, status = null) {
+  if (status) {
+    return db
+      .prepare('SELECT * FROM source_candidates WHERE status = ? ORDER BY jobs_found DESC, created_at DESC')
+      .all(status);
+  }
+  return db
+    .prepare(`
+      SELECT * FROM source_candidates
+      ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+               jobs_found DESC,
+               created_at DESC
+    `)
+    .all();
+}
+
+export function updateSourceCandidateStatus(db, id, action, jobsFound = null) {
+  const row = db.prepare('SELECT * FROM source_candidates WHERE id = ?').get(id);
+  if (!row) return null;
+  const now = new Date().toISOString();
+
+  if (action === 'approve') {
+    const cfg = buildConfigForAts(row.type, row.board_token, row.url, row.name);
+    db.prepare(`
+      INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+      VALUES (?, ?, ?, ?, ?, 1, 45)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, config = excluded.config, enabled = 1
+    `).run(row.id, row.name, row.type, row.tier || 1, JSON.stringify(cfg));
+    db.prepare(`
+      UPDATE source_candidates
+      SET status = 'approved', last_checked_at = ?, jobs_found = COALESCE(?, jobs_found)
+      WHERE id = ?
+    `).run(now, jobsFound, id);
+  } else if (action === 'disable') {
+    db.prepare('UPDATE sources SET enabled = 0 WHERE id = ?').run(row.id);
+    db.prepare(`
+      UPDATE source_candidates
+      SET status = 'disabled', last_checked_at = ?, jobs_found = COALESCE(?, jobs_found)
+      WHERE id = ?
+    `).run(now, jobsFound, id);
+  }
+
+  return db.prepare('SELECT * FROM source_candidates WHERE id = ?').get(id);
 }
 
 export function getProfile(db) {

@@ -898,16 +898,18 @@ async function loadCrmBoard() {
 }
 
 async function loadScraperConsole() {
-  const [srcData, statusData, healthData] = await Promise.all([
+  const [srcData, statusData, healthData, candData] = await Promise.all([
     api('/api/sources'),
     api('/api/scrape/status'),
     api('/api/sources/health').catch(() => ({ health: [] })),
+    api('/api/sources/candidates').catch(() => ({ candidates: [] })),
   ]);
   const healthMap = new Map((healthData.health || []).map((h) => [h.id, h]));
   state.sources = (srcData.sources || []).map((s) => ({
     ...s,
     health: healthMap.get(s.id) || null,
   }));
+  state.candidates = candData.candidates || [];
 
   $('#sched-enabled').checked = Boolean(statusData.schedulerEnabled);
   $('#sched-interval').value = String(statusData.intervalMins || 30);
@@ -920,7 +922,60 @@ async function loadScraperConsole() {
     </p>`;
 
   renderSourcesTable();
+  renderCandidatesTable();
   renderLogsTable(statusData.recentLogs || []);
+}
+
+function renderCandidatesTable() {
+  const tbody = $('#candidates-tbody');
+  const countEl = $('#candidates-count');
+  if (!tbody) return;
+  const list = state.candidates || [];
+  if (countEl) countEl.textContent = `${list.length} candidate${list.length === 1 ? '' : 's'}`;
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted small">No ATS candidates discovered yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list
+    .map(
+      (c) => `
+      <tr>
+        <td><strong>${esc(c.name)}</strong></td>
+        <td><span class="badge-tag mono">${esc(c.type)} · ${esc(c.board_token)}</span></td>
+        <td><span class="status-dot mono"><span class="dot ${c.status === 'approved' ? 'accent' : 'muted'}"></span>${esc(c.status)}</span></td>
+        <td class="mono">${c.jobs_found || 0}</td>
+        <td class="muted small mono">${esc(c.discovered_from || 'scan')}</td>
+        <td>
+          <div class="btn-row">
+            ${c.status !== 'approved' ? `<button class="btn btn-secondary btn-sm cand-approve" data-id="${esc(c.id)}">Approve</button>` : ''}
+            ${c.status !== 'disabled' ? `<button class="btn btn-ghost btn-sm cand-disable" data-id="${esc(c.id)}">Disable</button>` : ''}
+          </div>
+        </td>
+      </tr>`
+    )
+    .join('');
+
+  $$('.cand-approve').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/sources/candidates/${encodeURIComponent(btn.dataset.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'approve', scrapeNow: true }),
+      });
+      toast('Discovered source approved & scraping');
+      loadScraperConsole();
+    });
+  });
+
+  $$('.cand-disable').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/sources/candidates/${encodeURIComponent(btn.dataset.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'disable' }),
+      });
+      toast('Discovered source disabled');
+      loadScraperConsole();
+    });
+  });
 }
 
 function renderSourcesTable() {

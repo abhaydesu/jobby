@@ -34,6 +34,7 @@ import {
   scrapeLinkedInGuest,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
+import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates } from './autodiscover.js';
 import { upsertJobsBatch, recordSourceHealth } from '../db.js';
 
 export const DEFAULT_SOURCES = [
@@ -284,6 +285,17 @@ export function hydrateSourceRow(row) {
   };
 }
 
+export async function scrapeBySourceObject(sourceRow) {
+  const source = hydrateSourceRow(sourceRow);
+  source.db = sourceRow.db;
+  const adapter = ADAPTER_MAP[source.type];
+  if (!adapter) return [];
+  const jobs = await adapter(source);
+  const validJobs = Array.isArray(jobs) ? jobs.filter((j) => j && j.title && j.apply_url) : [];
+  resolveOffsiteAtsUrls(validJobs);
+  return validJobs;
+}
+
 export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
   const source = hydrateSourceRow(sourceRow);
   source.db = db;
@@ -303,7 +315,9 @@ export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
   try {
     const jobs = await adapter(source);
     const validJobs = Array.isArray(jobs) ? jobs.filter((j) => j && j.title && j.apply_url) : [];
+    resolveOffsiteAtsUrls(validJobs);
     const { newCount, updatedCount } = upsertJobsBatch(db, validJobs, source.id);
+    scanJobsForAtsCandidates(db, validJobs, source.id);
     const finishedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
 

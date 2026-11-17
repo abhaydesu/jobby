@@ -15,9 +15,10 @@ import {
   estimateStipendBenchmark,
 } from '../src/nlp.js';
 import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '../src/matcher.js';
-import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth } from '../src/db.js';
+import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth, getSourceCandidates } from '../src/db.js';
 import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
+import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates, verifyPendingCandidates } from '../src/scrapers/autodiscover.js';
 import { parseWorkdayListings, parseOracleHcm, parsePersonioXml, parseTeamtailorRss } from '../src/scrapers/ats.js';
 import {
   parseAmazonJobs,
@@ -734,6 +735,75 @@ test('POST /api/ingest enforces localhost + shared token and ingests extension j
     assert.equal(q.total, 1);
     assert.equal(q.jobs[0].source_type, 'wellfound_ext');
     assert.equal(q.jobs[0].seniority, 'intern');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+  }
+});
+
+test('Auto-discovery scans ATS patterns, resolves offsite apply URLs, and promotes verified candidates', async () => {
+  const { server, db } = createApp({ dbPath: ':memory:' });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const extJob = normalizeJobPayload({
+      sourceId: 'ext-linkedin-ext',
+      sourceType: 'linkedin_ext',
+      externalId: 'li-ext-1',
+      title: 'Software Engineer Intern',
+      company: 'AcmeCloud',
+      location: 'Bengaluru, India',
+      descriptionText: 'Apply directly via https://boards.greenhouse.io/acmecloud/jobs/4421001 and https://zepto.keka.com/careers/jobs',
+      applyUrl: 'https://www.linkedin.com/jobs/view/999111',
+    });
+
+    resolveOffsiteAtsUrls([extJob]);
+    assert.equal(extJob.apply_url, 'https://boards.greenhouse.io/acmecloud/jobs/4421001');
+
+    const discovered = scanJobsForAtsCandidates(db, [extJob], 'ext-linkedin-ext');
+    assert.ok(discovered.length >= 2);
+    assert.ok(discovered.some((c) => c.type === 'greenhouse' && c.board_token === 'acmecloud'));
+    assert.ok(discovered.some((c) => c.type === 'keka' && c.board_token === 'zepto'));
+
+    const mockScrapeFn = async (src) => {
+      if (src.type === 'greenhouse') {
+        return [
+          normalizeJobPayload({
+            sourceId: src.id,
+            sourceType: 'greenhouse',
+            externalId: 'gh-ac-1',
+            title: 'Graduate Software Engineer',
+            company: 'AcmeCloud',
+            location: 'Bengaluru, India',
+            descriptionText: 'TypeScript and Python.',
+            applyUrl: 'https://boards.greenhouse.io/acmecloud/jobs/4421002',
+          }),
+        ];
+      }
+      return [];
+    };
+
+    const promoted = await verifyPendingCandidates(db, { scrapeFn: mockScrapeFn, limit: 5 });
+    assert.equal(promoted.length, 1);
+    assert.equal(promoted[0].id, 'greenhouse-acmecloud');
+    const srcRow = db.prepare("SELECT enabled, last_status FROM sources WHERE id = 'greenhouse-acmecloud'").get();
+    assert.equal(srcRow.enabled, 1);
+    assert.equal(srcRow.last_status, 'success');
+
+    const candRes = await fetch(`${baseUrl}/api/sources/candidates`).then((r) => r.json());
+    const kekaCand = candRes.candidates.find((c) => c.type === 'keka');
+    assert.ok(kekaCand);
+
+    const disableRes = await fetch(`${baseUrl}/api/sources/candidates/${encodeURIComponent(kekaCand.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'disable' }),
+    });
+    assert.equal(disableRes.status, 200);
+    const updated = getSourceCandidates(db, 'disabled');
+    assert.ok(updated.some((c) => c.id === kekaCand.id));
   } finally {
     await new Promise((resolve) => server.close(resolve));
     db.close();

@@ -12,6 +12,8 @@ import {
   updateJobStatus,
   getAnalytics,
   getSourcesHealth,
+  getSourceCandidates,
+  updateSourceCandidateStatus,
   getSetting,
   upsertJobsBatch,
   syncFresherProfileAndReclassify,
@@ -20,6 +22,7 @@ import { parseResumeText, generateJobTailoring } from './matcher.js';
 import { seedDefaultSources, hydrateSourceRow } from './scrapers/index.js';
 import { normalizeJobPayload } from './scrapers/normalize.js';
 import { discoverCareerPage } from './scrapers/fingerprinter.js';
+import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates } from './scrapers/autodiscover.js';
 import { ScrapeScheduler } from './scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -267,7 +270,9 @@ export function createApp({ dbPath } = {}) {
             })
           );
 
+        resolveOffsiteAtsUrls(normalized);
         const stats = upsertJobsBatch(db, normalized, sourceId);
+        scanJobsForAtsCandidates(db, normalized, sourceId);
         db.prepare(`
           UPDATE sources
           SET last_scraped_at = ?, last_status = 'ok', jobs_found_last = ?,
@@ -388,6 +393,27 @@ export function createApp({ dbPath } = {}) {
 
       if (method === 'GET' && pathname === '/api/sources/health') {
         return sendJson(res, 200, { health: getSourcesHealth(db) });
+      }
+
+      if (method === 'GET' && pathname === '/api/sources/candidates') {
+        const statusFilter = reqUrl.searchParams.get('status') || null;
+        return sendJson(res, 200, { candidates: getSourceCandidates(db, statusFilter) });
+      }
+
+      const candidateMatch = /^\/api\/sources\/candidates\/([^/]+)$/.exec(pathname);
+      if (candidateMatch && method === 'PATCH') {
+        const candidateId = decodeURIComponent(candidateMatch[1]);
+        const body = await readJsonBody(req);
+        const action = String(body.action || '').trim().toLowerCase();
+        if (action !== 'approve' && action !== 'disable') {
+          return sendJson(res, 400, { error: 'action must be approve or disable' });
+        }
+        const updated = updateSourceCandidateStatus(db, candidateId, action);
+        if (!updated) return sendJson(res, 404, { error: 'Candidate not found' });
+        if (action === 'approve' && body.scrapeNow !== false) {
+          scheduler.triggerScrape({ mode: 'source', sourceId: updated.id }).catch(() => {});
+        }
+        return sendJson(res, 200, { candidate: updated });
       }
 
       const sourceMatch = /^\/api\/sources\/([^/]+)$/.exec(pathname);
