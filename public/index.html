@@ -347,6 +347,18 @@
             <div id="discover-result" class="discover-result hidden"></div>
 
             <div class="divider"></div>
+            <h4>Import Career URL or Email Alert (.eml / mbox)</h4>
+            <div class="form-row">
+              <input type="text" id="import-url" placeholder="https://company.com/careers (ATS or JSON-LD)" />
+              <button class="btn btn-secondary" id="btn-import-url">Import URL</button>
+            </div>
+            <div class="form-row" style="margin-top:8px;">
+              <input type="file" id="import-eml-file" accept=".eml,.mbox,.txt" />
+              <button class="btn btn-secondary" id="btn-import-eml">Import EML / mbox</button>
+            </div>
+            <div id="import-result" class="discover-result hidden"></div>
+
+            <div class="divider"></div>
             <h4>Add ATS Slug Manually</h4>
             <div class="inline-form-grid">
               <input type="text" id="add-src-name" placeholder="Company Name" />

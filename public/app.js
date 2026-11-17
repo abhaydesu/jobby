@@ -1712,6 +1712,54 @@ function bindEvents() {
     }
   });
 
+  $('#btn-import-url')?.addEventListener('click', async () => {
+    const url = $('#import-url').value.trim();
+    const resBox = $('#import-result');
+    if (!url) return toast('Enter a URL to import');
+    resBox.classList.remove('hidden');
+    resBox.textContent = 'Running career discovery & JSON-LD ingestion...';
+    try {
+      const res = await api('/api/import/url', {
+        method: 'POST',
+        body: JSON.stringify({ url }),
+      });
+      if (res.outcome === 'ats_detected') {
+        resBox.innerHTML = `<strong>ATS source added (${esc(res.detectedAts.type)}):</strong> ${res.scrapeResult?.fetchedTotal ?? 0} jobs fetched`;
+        loadScraperConsole();
+        loadJobs();
+      } else if (res.outcome === 'json_ld_ingested') {
+        resBox.innerHTML = `<strong>Ingested JSON-LD:</strong> ${res.jobsFound} parsed (${res.newCount} new, ${res.updatedCount} updated)`;
+        loadScraperConsole();
+        loadJobs();
+      } else {
+        resBox.textContent = res.message || 'No ATS or JSON-LD job postings found.';
+      }
+    } catch (err) {
+      resBox.textContent = `Error: ${err.message}`;
+    }
+  });
+
+  $('#btn-import-eml')?.addEventListener('click', async () => {
+    const fileInput = $('#import-eml-file');
+    const file = fileInput?.files?.[0];
+    const resBox = $('#import-result');
+    if (!file) return toast('Choose a .eml or .mbox file first');
+    resBox.classList.remove('hidden');
+    resBox.textContent = `Parsing ${file.name}...`;
+    try {
+      const content = await file.text();
+      const res = await api('/api/import/eml', {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, content }),
+      });
+      resBox.innerHTML = `<strong>Imported ${esc(file.name)}:</strong> ${res.parsedCount} postings (${res.newCount} new, ${res.updatedCount} updated)`;
+      loadScraperConsole();
+      loadJobs();
+    } catch (err) {
+      resBox.textContent = `Error: ${err.message}`;
+    }
+  });
+
   $('#btn-save-profile').addEventListener('click', saveProfile);
 
   $('#btn-parse-resume').addEventListener('click', async () => {

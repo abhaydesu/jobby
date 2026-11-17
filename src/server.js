@@ -14,6 +14,7 @@ import {
   getSourcesHealth,
   getSourceCandidates,
   updateSourceCandidateStatus,
+  buildConfigForAts,
   getSetting,
   upsertJobsBatch,
   syncFresherProfileAndReclassify,
@@ -23,6 +24,7 @@ import { seedDefaultSources, hydrateSourceRow } from './scrapers/index.js';
 import { normalizeJobPayload } from './scrapers/normalize.js';
 import { discoverCareerPage } from './scrapers/fingerprinter.js';
 import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates } from './scrapers/autodiscover.js';
+import { parseJobAlertEmail } from './importer.js';
 import { ScrapeScheduler } from './scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,17 +81,21 @@ function verifySecretToken(provided, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-async function readJsonBody(req) {
+async function readRawBody(req, maxBytes = 5 * 1024 * 1024) {
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of req) {
     totalBytes += chunk.length;
-    if (totalBytes > 2 * 1024 * 1024) {
+    if (totalBytes > maxBytes) {
       throw new Error('Request payload too large');
     }
     chunks.push(chunk);
   }
-  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readJsonBody(req) {
+  const raw = (await readRawBody(req, 2 * 1024 * 1024)).trim();
   if (!raw) return {};
   return JSON.parse(raw);
 }
@@ -302,6 +308,106 @@ export function createApp({ dbPath } = {}) {
           },
           corsHeaders
         );
+      }
+
+      if (method === 'POST' && pathname === '/api/import/url') {
+        const body = await readJsonBody(req);
+        const targetUrl = String(body.url || '').trim();
+        if (!targetUrl) {
+          return sendJson(res, 400, { error: 'url is required' });
+        }
+        const discovery = await discoverCareerPage(targetUrl);
+        if (discovery.detectedAts) {
+          const { type, slug } = discovery.detectedAts;
+          const companyName =
+            body.name?.trim() ||
+            slug.split('.')[0].replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+          const sourceId = `${type}-${slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48)}`;
+          const cfg = buildConfigForAts(type, slug, discovery.targetUrl, companyName);
+          db.prepare(`
+            INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+            VALUES (?, ?, ?, 1, ?, 1, 30)
+            ON CONFLICT(id) DO UPDATE SET enabled = 1, config = excluded.config
+          `).run(sourceId, companyName, type, JSON.stringify(cfg));
+          const row = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId);
+          const scrapeResult = await scheduler.triggerScrape({ mode: 'source', sourceId });
+          return sendJson(res, 200, {
+            ok: true,
+            outcome: 'ats_detected',
+            detectedAts: discovery.detectedAts,
+            source: hydrateSourceRow(row),
+            scrapeResult,
+          });
+        }
+        if (discovery.jsonLdJobs.length > 0) {
+          const hostname = new URL(discovery.targetUrl).hostname.replace(/^www\./, '');
+          const sourceId = `custom-${hostname.replace(/[^a-z0-9]+/g, '-')}`;
+          db.prepare(`
+            INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+            VALUES (?, ?, 'custom', 3, ?, 1, 60)
+            ON CONFLICT(id) DO UPDATE SET enabled = 1
+          `).run(sourceId, body.name?.trim() || hostname, JSON.stringify({ url: discovery.targetUrl, companyName: hostname }));
+          const jobs = discovery.jsonLdJobs.map((j) => ({ ...j, source_id: sourceId }));
+          resolveOffsiteAtsUrls(jobs);
+          const stats = upsertJobsBatch(db, jobs, sourceId);
+          scanJobsForAtsCandidates(db, jobs, sourceId);
+          db.prepare(`
+            UPDATE sources
+            SET last_scraped_at = ?, last_status = 'success', jobs_found_last = ?,
+                total_active_jobs = (SELECT COUNT(*) FROM jobs WHERE source_id = ? AND is_active = 1)
+            WHERE id = ?
+          `).run(new Date().toISOString(), jobs.length, sourceId, sourceId);
+          broadcastSse({ type: 'import:complete', sourceId, jobsFound: jobs.length, ...stats });
+          return sendJson(res, 200, {
+            ok: true,
+            outcome: 'json_ld_ingested',
+            targetUrl: discovery.targetUrl,
+            sourceId,
+            jobsFound: jobs.length,
+            ...stats,
+          });
+        }
+        return sendJson(res, 200, {
+          ok: false,
+          outcome: 'not_detected',
+          targetUrl: discovery.targetUrl,
+          message: 'Could not detect ATS endpoint or Schema.org JobPosting JSON-LD on that page.',
+        });
+      }
+
+      if (method === 'POST' && pathname === '/api/import/eml') {
+        const contentType = String(req.headers['content-type'] || '').toLowerCase();
+        const rawBody = await readRawBody(req, 5 * 1024 * 1024);
+        let emailText = rawBody;
+        if (contentType.includes('application/json')) {
+          const parsed = JSON.parse(rawBody || '{}');
+          emailText = String(parsed.content || parsed.eml || '');
+        }
+        if (!emailText || !emailText.trim()) {
+          return sendJson(res, 400, { error: 'Non-empty .eml or mbox content is required' });
+        }
+        const sourceId = 'email-import';
+        const jobs = parseJobAlertEmail(emailText, { sourceId });
+        db.prepare(`
+          INSERT OR IGNORE INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+          VALUES (?, 'Email Alerts (.eml / mbox)', 'email_import', 2, '{}', 1, 60)
+        `).run(sourceId);
+        resolveOffsiteAtsUrls(jobs);
+        const stats = upsertJobsBatch(db, jobs, sourceId);
+        scanJobsForAtsCandidates(db, jobs, sourceId);
+        db.prepare(`
+          UPDATE sources
+          SET last_scraped_at = ?, last_status = 'success', jobs_found_last = ?,
+              total_active_jobs = (SELECT COUNT(*) FROM jobs WHERE source_id = ? AND is_active = 1)
+          WHERE id = ?
+        `).run(new Date().toISOString(), jobs.length, sourceId, sourceId);
+        broadcastSse({ type: 'import:complete', sourceId, parsedCount: jobs.length, ...stats });
+        return sendJson(res, 200, {
+          ok: true,
+          sourceId,
+          parsedCount: jobs.length,
+          ...stats,
+        });
       }
 
       if (pathname === '/api/sources') {

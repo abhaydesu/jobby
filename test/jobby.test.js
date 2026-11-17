@@ -19,6 +19,7 @@ import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSo
 import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
 import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates, verifyPendingCandidates } from '../src/scrapers/autodiscover.js';
+import { parseJobAlertEmail } from '../src/importer.js';
 import { parseWorkdayListings, parseOracleHcm, parsePersonioXml, parseTeamtailorRss } from '../src/scrapers/ats.js';
 import {
   parseAmazonJobs,
@@ -731,7 +732,7 @@ test('POST /api/ingest enforces localhost + shared token and ingests extension j
     assert.equal(body.received, 1);
     assert.equal(body.newCount, 1);
 
-    const q = queryJobs(db, { search: 'Razorpay' });
+    const q = queryJobs(db, { q: 'Razorpay' });
     assert.equal(q.total, 1);
     assert.equal(q.jobs[0].source_type, 'wellfound_ext');
     assert.equal(q.jobs[0].seniority, 'intern');
@@ -806,6 +807,93 @@ test('Auto-discovery scans ATS patterns, resolves offsite apply URLs, and promot
     assert.ok(updated.some((c) => c.id === kekaCand.id));
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    db.close();
+  }
+});
+
+test('Manual URL and EML/mbox importers ingest job alert emails and Schema.org JSON-LD pages', async () => {
+  const mboxSample = [
+    'From alerts@linkedin.com Mon Jan 12 09:00:00 2026',
+    'From: LinkedIn Job Alerts <jobs-noreply@linkedin.com>',
+    'Subject: "software engineer intern" in Bengaluru',
+    'Content-Type: text/html; charset=utf-8',
+    'Content-Transfer-Encoding: quoted-printable',
+    '',
+    '<html><body><table><tr><td>',
+    '<a href=3D"https://www.linkedin.com/comm/jobs/view/3988123456?trk=3Demail">Software Engineer Intern</a>',
+    '<p>Atlassian - Bengaluru, India</p>',
+    '<p>Stipend: Rs 80,000/month</p>',
+    '</td></tr></table></body></html>',
+    '',
+    'From alerts@naukri.com Tue Jan 13 09:00:00 2026',
+    'From: Naukri Alerts <alerts@naukri.com>',
+    'Subject: New Internships from Internshala & Naukri',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    '<div><a href="https://internshala.com/internship/detail/backend-node-intern-at-finbox123">Backend Node.js Intern</a><p>FinBox · Bengaluru</p></div>',
+    '<div><a href="https://www.naukri.com/job-listings-sde-1-fresher-zepto-bengaluru-12345">SDE 1 (Fresher)</a><p>Zepto · Bengaluru, India</p></div>',
+    '<div><a href="https://wellfound.com/jobs/299100-ml-intern">ML Intern</a><p>Sarvam AI · Bengaluru</p></div>',
+  ].join('\r\n');
+
+  const emailJobs = parseJobAlertEmail(mboxSample);
+  assert.equal(emailJobs.length, 4);
+  assert.ok(emailJobs.some((j) => j.source_type === 'linkedin_email' && j.company === 'Atlassian'));
+  assert.ok(emailJobs.some((j) => j.source_type === 'internshala_email' && j.title.includes('Backend')));
+  assert.ok(emailJobs.some((j) => j.source_type === 'naukri_email' && j.title.includes('SDE 1')));
+  assert.ok(emailJobs.some((j) => j.source_type === 'wellfound_email' && j.title === 'ML Intern'));
+
+  const mockCareerServer = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!doctype html><html><body><script type="application/ld+json">${JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'JobPosting',
+      title: 'Associate Software Engineer',
+      hiringOrganization: { name: 'Groww' },
+      jobLocation: { '@type': 'Place', address: { addressLocality: 'Bengaluru', addressCountry: 'IN' } },
+      description: 'Java, Spring Boot, Microservices for 2026 new grads.',
+      url: 'https://groww.in/careers/ase-1',
+    })}</script></body></html>`);
+  });
+
+  const { server, db } = createApp({ dbPath: ':memory:' });
+  await Promise.all([
+    new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)),
+    new Promise((resolve) => mockCareerServer.listen(0, '127.0.0.1', resolve)),
+  ]);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const careerUrl = `http://127.0.0.1:${mockCareerServer.address().port}/careers`;
+
+  try {
+    const emlRes = await fetch(`${baseUrl}/api/import/eml`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: mboxSample,
+    });
+    assert.equal(emlRes.status, 200);
+    const emlData = await emlRes.json();
+    assert.equal(emlData.ok, true);
+    assert.equal(emlData.parsedCount, 4);
+    assert.equal(emlData.newCount, 4);
+
+    const urlRes = await fetch(`${baseUrl}/api/import/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: careerUrl, name: 'Groww' }),
+    });
+    assert.equal(urlRes.status, 200);
+    const urlData = await urlRes.json();
+    assert.equal(urlData.ok, true);
+    assert.equal(urlData.outcome, 'json_ld_ingested');
+    assert.equal(urlData.jobsFound, 1);
+
+    const q = queryJobs(db, { q: 'Groww' });
+    assert.equal(q.total, 1);
+    assert.equal(q.jobs[0].seniority, 'junior');
+  } finally {
+    await Promise.all([
+      new Promise((resolve) => server.close(resolve)),
+      new Promise((resolve) => mockCareerServer.close(resolve)),
+    ]);
     db.close();
   }
 });
