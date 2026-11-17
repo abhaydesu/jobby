@@ -680,3 +680,62 @@ test('LinkedIn guest parser & rate/429 backoff caps work properly', async () => 
   assert.equal(blockedReqs, 0);
   db.close();
 });
+
+test('POST /api/ingest enforces localhost + shared token and ingests extension jobs', async () => {
+  const { server, db } = createApp({ dbPath: ':memory:' });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const cfgRes = await fetch(`${baseUrl}/api/ingest/config`);
+    assert.equal(cfgRes.status, 200);
+    const { ingestToken } = await cfgRes.json();
+    assert.ok(ingestToken && ingestToken.length >= 32);
+
+    const payload = {
+      sourceTag: 'wellfound_ext',
+      pageUrl: 'https://wellfound.com/jobs',
+      jobs: [
+        {
+          externalId: 'wf-9001',
+          title: 'Backend Engineering Intern',
+          company: 'Razorpay',
+          location: 'Bengaluru, India',
+          descriptionText: 'Node.js, TypeScript, SQL internship in Bengaluru. Stipend Rs 50,000/month.',
+          applyUrl: 'https://wellfound.com/jobs/wf-9001',
+        },
+      ],
+    };
+
+    const unauth = await fetch(`${baseUrl}/api/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Jobby-Token': 'wrong-token' },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(unauth.status, 401);
+
+    const okRes = await fetch(`${baseUrl}/api/ingest`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Jobby-Token': ingestToken,
+        Origin: 'chrome-extension://abcdefghijklmnop',
+      },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(okRes.status, 200);
+    const body = await okRes.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.received, 1);
+    assert.equal(body.newCount, 1);
+
+    const q = queryJobs(db, { search: 'Razorpay' });
+    assert.equal(q.total, 1);
+    assert.equal(q.jobs[0].source_type, 'wellfound_ext');
+    assert.equal(q.jobs[0].seniority, 'intern');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+  }
+});

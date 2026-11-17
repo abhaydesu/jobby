@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Jobby Extension Settings</title>
+  <style>
+    body { max-width: 440px; margin: 20px auto; padding: 16px; background: #09090b; color: #f4f4f5; font-family: system-ui, -apple-system, sans-serif; font-size: 13px; }
+    label { display: block; margin: 12px 0 4px; color: #a1a1aa; font-size: 12px; }
+    input { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid #27272a; background: #18181b; color: #fff; font-size: 13px; }
+    .row { display: flex; gap: 8px; margin-top: 14px; }
+    button { padding: 8px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #27272a; color: #f4f4f5; }
+    .msg { margin-top: 10px; font-size: 12px; color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <h2>Jobby Capture Settings</h2>
+  <label for="server-url">Local Server URL</label>
+  <input type="text" id="server-url" placeholder="http://127.0.0.1:3456" />
+  <label for="ingest-token">Shared Ingest Token (X-Jobby-Token)</label>
+  <input type="password" id="ingest-token" placeholder="Paste or sync from local Jobby" />
+  <div class="row">
+    <button class="secondary" id="btn-sync">Sync from Local Jobby</button>
+    <button class="primary" id="btn-save">Save Settings</button>
+  </div>
+  <div class="msg" id="save-msg"></div>
+  <script src="options.js"></script>
+</body>
+</html>

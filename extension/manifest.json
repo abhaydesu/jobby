@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Jobby Capture Companion",
+  "version": "1.0.0",
+  "description": "Capture intern and new-grad job listings from LinkedIn, Wellfound, Naukri, Instahyre, and Cutshort directly into Jobby.",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:3456/*",
+    "http://localhost:3456/*",
+    "https://www.linkedin.com/jobs*",
+    "https://wellfound.com/*",
+    "https://www.naukri.com/*",
+    "https://www.instahyre.com/*",
+    "https://cutshort.io/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/jobs*",
+        "https://wellfound.com/jobs*",
+        "https://wellfound.com/company/*/jobs*",
+        "https://www.naukri.com/*",
+        "https://www.instahyre.com/*",
+        "https://cutshort.io/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

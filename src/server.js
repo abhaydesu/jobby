@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,10 +12,13 @@ import {
   updateJobStatus,
   getAnalytics,
   getSourcesHealth,
+  getSetting,
+  upsertJobsBatch,
   syncFresherProfileAndReclassify,
 } from './db.js';
 import { parseResumeText, generateJobTailoring } from './matcher.js';
 import { seedDefaultSources, hydrateSourceRow } from './scrapers/index.js';
+import { normalizeJobPayload } from './scrapers/normalize.js';
 import { discoverCareerPage } from './scrapers/fingerprinter.js';
 import { ScrapeScheduler } from './scheduler.js';
 
@@ -34,13 +38,42 @@ const MIME_TYPES = {
   '.md': 'text/markdown; charset=utf-8',
 };
 
-function sendJson(res, status, data) {
+function sendJson(res, status, data, extraHeaders = {}) {
   const payload = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   res.end(payload);
+}
+
+function isLocalhostReq(req) {
+  const remote = req.socket?.remoteAddress || '';
+  const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  if (!isLoopback) return false;
+  const origin = String(req.headers.origin || '');
+  if (!origin) return true;
+  if (origin.startsWith('chrome-extension://')) return true;
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
+}
+
+function getIngestCorsHeaders(req) {
+  const origin = String(req.headers.origin || '');
+  if (!origin) return {};
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Headers': 'Content-Type, X-Jobby-Token',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  };
+}
+
+function verifySecretToken(provided, expected) {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 async function readJsonBody(req) {
@@ -70,7 +103,7 @@ export function createApp({ dbPath } = {}) {
   const scheduler = new ScrapeScheduler(db);
   const sseClients = new Set();
 
-  scheduler.on('event', (evt) => {
+  function broadcastSse(evt) {
     const line = `data: ${JSON.stringify(evt)}\n\n`;
     for (const client of sseClients) {
       try {
@@ -79,7 +112,9 @@ export function createApp({ dbPath } = {}) {
         sseClients.delete(client);
       }
     }
-  });
+  }
+
+  scheduler.on('event', broadcastSse);
 
   const server = http.createServer(async (req, res) => {
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -167,7 +202,103 @@ export function createApp({ dbPath } = {}) {
         return sendJson(res, 200, { extracted });
       }
 
-      // Sources Management & Discovery
+      if (method === 'OPTIONS' && pathname.startsWith('/api/ingest')) {
+        if (!isLocalhostReq(req)) {
+          return sendJson(res, 403, { error: 'Forbidden' });
+        }
+        res.writeHead(204, getIngestCorsHeaders(req));
+        res.end();
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/ingest/config') {
+        if (!isLocalhostReq(req)) {
+          return sendJson(res, 403, { error: 'Forbidden' });
+        }
+        return sendJson(res, 200, { ingestToken: getSetting(db, 'ingest_token', '') }, getIngestCorsHeaders(req));
+      }
+
+      if (method === 'POST' && pathname === '/api/ingest') {
+        const corsHeaders = getIngestCorsHeaders(req);
+        if (!isLocalhostReq(req)) {
+          return sendJson(res, 403, { error: 'Forbidden' }, corsHeaders);
+        }
+        const expectedToken = getSetting(db, 'ingest_token', '');
+        const providedToken = req.headers['x-jobby-token'] || '';
+        if (!verifySecretToken(providedToken, expectedToken)) {
+          return sendJson(res, 401, { error: 'Unauthorized ingest token' }, corsHeaders);
+        }
+
+        const body = await readJsonBody(req);
+        const rawTag = String(body.sourceTag || body.source || 'browser_ext')
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+          .slice(0, 32) || 'browser_ext';
+        const sourceId = rawTag.startsWith('ext-') ? rawTag : `ext-${rawTag.replace(/_/g, '-')}`;
+        const rawJobs = Array.isArray(body.jobs) ? body.jobs : [];
+        if (rawJobs.length === 0) {
+          return sendJson(res, 400, { error: 'jobs array is required' }, corsHeaders);
+        }
+
+        db.prepare(`
+          INSERT OR IGNORE INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+          VALUES (?, ?, ?, 2, '{}', 1, 60)
+        `).run(sourceId, `Extension (${rawTag})`, rawTag);
+
+        const normalized = rawJobs
+          .filter((item) => item && typeof item === 'object' && String(item.title || '').trim())
+          .map((item) =>
+            normalizeJobPayload({
+              sourceId,
+              sourceType: rawTag,
+              externalId: item.externalId || item.id || item.applyUrl || item.url || `${item.company || 'unknown'}-${item.title}`,
+              title: String(item.title).trim(),
+              company: String(item.company || 'Unknown').trim(),
+              location: String(item.location || 'India').trim(),
+              explicitRemote: item.explicitRemote,
+              employmentType: item.employmentType || '',
+              descriptionHtml: item.descriptionHtml || '',
+              descriptionText: item.descriptionText || '',
+              structuredSalary: item.structuredSalary || null,
+              applyUrl: item.applyUrl || item.url || body.pageUrl || '',
+              companyUrl: item.companyUrl || '',
+              postedAt: item.postedAt || null,
+            })
+          );
+
+        const stats = upsertJobsBatch(db, normalized, sourceId);
+        db.prepare(`
+          UPDATE sources
+          SET last_scraped_at = ?, last_status = 'ok', jobs_found_last = ?,
+              total_active_jobs = (SELECT COUNT(*) FROM jobs WHERE source_id = ? AND is_active = 1)
+          WHERE id = ?
+        `).run(new Date().toISOString(), normalized.length, sourceId, sourceId);
+
+        broadcastSse({
+          type: 'ingest:complete',
+          sourceId,
+          sourceTag: rawTag,
+          received: normalized.length,
+          newCount: stats.newCount,
+          updatedCount: stats.updatedCount,
+        });
+
+        return sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            sourceId,
+            received: normalized.length,
+            count: normalized.length,
+            newCount: stats.newCount,
+            updatedCount: stats.updatedCount,
+          },
+          corsHeaders
+        );
+      }
+
       if (pathname === '/api/sources') {
         if (method === 'GET') {
           const rows = db.prepare('SELECT * FROM sources ORDER BY tier ASC, total_active_jobs DESC, name ASC').all();

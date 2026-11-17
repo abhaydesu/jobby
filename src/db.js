@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { scoreJobAgainstProfile } from './matcher.js';
@@ -230,6 +231,7 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
   const defaultSettings = {
     scheduler_enabled: 'true',
     scrape_interval_mins: '30',
+    ingest_token: crypto.randomBytes(24).toString('hex'),
   };
   const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(defaultSettings)) {
