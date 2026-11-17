@@ -1,7 +1,7 @@
 // 100-Point Multi-Dimensional Profile Matching Engine,
 // Resume Text Parser & Job Tailoring Generator
 
-import { extractSkills, extractExperience, extractWorkMode, classifyLocationTier, classifyRoleCategory, SKILL_TAXONOMY } from './nlp.js';
+import { extractSkills, extractExperience, extractEligibility, extractWorkMode, classifyLocationTier, classifyRoleCategory, SKILL_TAXONOMY } from './nlp.js';
 
 const CANONICAL_SKILL_RX = new Map(SKILL_TAXONOMY.map(([name, , rx]) => [name.toLowerCase(), rx]));
 
@@ -291,6 +291,37 @@ export function scoreJobAgainstProfile(job, profile) {
     bonusPts -= 10;
   }
 
+  const eligibility = job.eligibility || extractEligibility(job.description_text || '', job.title || '');
+  const resumeBatchMatch = /\b202[567]\b/.exec(`${profile?.headline || ''} ${profile?.resume_text || ''}`);
+  const profileBatch = String(profile?.graduation_year || resumeBatchMatch?.[0] || '2026');
+  const profileCgpa = profile?.cgpa != null ? Number(profile.cgpa) : null;
+  const profileDegree = String(profile?.degree || 'B.Tech');
+
+  let eligibilityFit = 'open';
+  let eligibilityNote = '';
+  if (eligibility.batches?.length > 0 && !eligibility.batches.includes(profileBatch)) {
+    eligibilityFit = 'batch_mismatch';
+    eligibilityNote = `Requires batch ${eligibility.batches.join('/')}`;
+    bonusPts -= 25;
+  } else if (eligibility.minCgpa && profileCgpa !== null && profileCgpa < eligibility.minCgpa) {
+    eligibilityFit = 'cgpa_mismatch';
+    eligibilityNote = `Requires ${eligibility.minCgpa}+ CGPA`;
+    bonusPts -= 20;
+  } else if (
+    eligibility.degrees?.length > 0 &&
+    !eligibility.degrees.some((d) => ['B.Tech', 'B.E', 'Bachelor'].includes(d) || d.toLowerCase() === profileDegree.toLowerCase()) &&
+    eligibility.degrees.some((d) => ['PhD', 'M.Tech', 'MCA'].includes(d))
+  ) {
+    eligibilityFit = 'degree_mismatch';
+    eligibilityNote = `Requires ${eligibility.degrees.join('/')}`;
+    bonusPts -= 20;
+  } else if (eligibility.batches?.length || eligibility.minCgpa || eligibility.degrees?.length || eligibility.branches?.length) {
+    eligibilityFit = 'fit';
+  }
+
+  const salaryConfidence = job.salary_confidence || (job.is_salary_estimated ? 'low' : job.salary_min ? 'high' : 'none');
+  const salaryBasis = job.salary_basis || (job.is_salary_estimated ? 'Market estimate' : job.salary_min ? 'Listed in job post' : '');
+
   const finalScore = Math.max(0, Math.min(100, Math.round(rawScore + bonusPts)));
 
   return {
@@ -298,6 +329,13 @@ export function scoreJobAgainstProfile(job, profile) {
     breakdown: {
       locationTier,
       roleCategory,
+      eligibility: {
+        ...eligibility,
+        fit: eligibilityFit,
+        note: eligibilityNote,
+      },
+      salaryConfidence,
+      salaryBasis,
       dimensions: {
         title: { earned: titlePts, max: Math.round(w.title), matchedTitle: bestMatchedTitle || null, seniorityMatch },
         skills: { earned: skillsPts, max: Math.round(w.skills) },

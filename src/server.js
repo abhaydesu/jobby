@@ -153,6 +153,7 @@ export function createApp({ dbPath } = {}) {
           workMode: sp.get('workMode') || '',
           seniority: sp.get('seniority') ?? 'intern,junior',
           roleCategory: sp.get('roleCategory') ?? 'tech',
+          batch: sp.get('batch') || '',
           locationPriority: sp.get('locationPriority') || '',
           sourceType: sp.get('sourceType') || '',
           sourceId: sp.get('sourceId') || '',

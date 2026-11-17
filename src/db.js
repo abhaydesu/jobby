@@ -677,6 +677,8 @@ export function syncFresherProfileAndReclassify(db) {
         salary_period: sal.period,
         salary_raw: sal.raw,
         is_salary_estimated: sal.estimated ? 1 : 0,
+        salary_confidence: sal.confidence || (sal.estimated ? 'low' : 'high'),
+        salary_basis: sal.basis || '',
         skills: safeJsonParse(row.skills, []),
         visa_sponsorship: Boolean(row.visa_sponsorship),
       };
@@ -1096,6 +1098,7 @@ export function queryJobs(db, params = {}) {
     workMode = '',
     seniority = 'intern,junior',
     roleCategory = 'tech',
+    batch = '',
     locationPriority = '',
     sourceType = '',
     sourceId = '',
@@ -1170,6 +1173,14 @@ export function queryJobs(db, params = {}) {
         args.push(`%"roleCategory":"${c}"%`);
       }
     }
+  }
+
+  if (batch === 'eligible_only') {
+    where.push("j.match_breakdown NOT LIKE '%\"fit\":\"%_mismatch\"%'");
+  } else if (batch && /^202\d$/.test(String(batch).trim())) {
+    const cleanBatch = String(batch).trim();
+    where.push('(j.match_breakdown LIKE ? OR j.description_text LIKE ?)');
+    args.push(`%"${cleanBatch}"%`, `%${cleanBatch}%`);
   }
 
   const blrCond = "(j.location LIKE '%Bangalore%' OR j.location LIKE '%Bengaluru%' OR j.location LIKE '%BLR%')";

@@ -874,6 +874,11 @@ input[type="range"] {
   font-size: 0.73rem;
   color: var(--text);
 }
+.stipend-line.estimated {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+}
 .stipend-note { color: var(--text-muted); }
 .stipend-line.accent-pill .stipend-note { color: var(--accent-light); opacity: 0.85; }
 

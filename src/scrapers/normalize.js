@@ -7,6 +7,7 @@ import {
   estimateStipendBenchmark,
   classifyRoleCategory,
   extractExperience,
+  extractEligibility,
   extractWorkMode,
   extractVisaSponsorship,
   extractFlags,
@@ -275,6 +276,7 @@ export function normalizeJobPayload({
   const skills = extractSkills(combinedForNlp, tags);
   const roleCategory = classifyRoleCategory(cleanTitle, department, plainText);
   const exp = extractExperience(plainText, cleanTitle);
+  const eligibility = extractEligibility(plainText, cleanTitle);
   if (explicitSeniority && (exp.seniority === 'unknown' || exp.seniority === 'mid')) {
     exp.seniority = explicitSeniority;
   }
@@ -331,12 +333,15 @@ export function normalizeJobPayload({
     employment_type: employmentType || 'Full-Time',
     experience_min: exp.min,
     experience_max: exp.max,
+    eligibility,
     salary_min: salary.min,
     salary_max: salary.max,
     salary_currency: salary.currency,
     salary_period: salary.period,
     salary_raw: salary.raw,
     is_salary_estimated: salary.estimated,
+    salary_confidence: salary.confidence || (salary.estimated ? 'low' : 'high'),
+    salary_basis: salary.basis || '',
     description_html: safeHtml,
     description_text: plainText,
     skills,

@@ -333,12 +333,14 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: structured.raw || `${currency} ${min || ''}${max && max !== min ? ` - ${max}` : ''}`,
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed in job posting',
       };
     }
   }
 
   const content = String(text || '');
-  if (!content) return { min: null, max: null, currency: 'USD', period: 'year', raw: '', estimated: false };
+  if (!content) return { min: null, max: null, currency: 'USD', period: 'year', raw: '', estimated: false, confidence: 'none', basis: '' };
 
   const currencyMap = { '$': 'USD', '£': 'GBP', '€': 'EUR' };
 
@@ -376,11 +378,12 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed annual range in job post',
       };
     }
   }
 
-  // 1b. INR Monthly Stipends (e.g. ₹50,000 - ₹80,000/month, INR 60k p.m., Rs 1,50,000/mo)
   const inrMonthlyRx =
     /(?:₹|INR|Rs\.?)\s*(\d{1,3}(?:,\d{2,3})+|\d{2,3}\s*[kK]|\d{5,6})(?:\s*(?:-|–|—|to)\s*(?:₹|INR|Rs\.?)?\s*(\d{1,3}(?:,\d{2,3})+|\d{2,3}\s*[kK]|\d{5,6}))?\s*(?:\/\s*mo(?:nth)?|per\s+month|p\.?\s*m\.?|monthly|stipend)/gi;
   while ((match = inrMonthlyRx.exec(content)) !== null) {
@@ -396,11 +399,12 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed INR monthly stipend in job post',
       };
     }
   }
 
-  // 1c. INR Lakhs Per Annum (LPA) e.g. 12 - 18 LPA, ₹15 LPA
   const inrLpaRx =
     /(?:₹|INR|Rs\.?)?\s*(\d{1,2}(?:\.\d{1,2})?)\s*(?:(?:-|–|—|to)\s*(\d{1,2}(?:\.\d{1,2})?))?\s*(?:LPA|Lakhs?\s*(?:per\s+annum|p\.?\s*a\.?))/gi;
   while ((match = inrLpaRx.exec(content)) !== null) {
@@ -414,11 +418,12 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed LPA CTC in job post',
       };
     }
   }
 
-  // 1d. USD/EUR/GBP Monthly Stipends e.g. $5,000 - $7,500/month or $6k/mo
   const fxMonthlyRx =
     /([$£€])\s*(\d{1,2}(?:,\d{3})+|\d{1,2}(?:\.\d)?\s*[kK])(?:\s*(?:-|–|—|to)\s*([$£€])?\s*(\d{1,2}(?:,\d{3})+|\d{1,2}(?:\.\d)?\s*[kK]))?\s*(?:\/\s*mo(?:nth)?|per\s+month|monthly)/gi;
   while ((match = fxMonthlyRx.exec(content)) !== null) {
@@ -435,11 +440,12 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed monthly compensation in job post',
       };
     }
   }
 
-  // 2. Hourly range patterns: $55/hr - $85/hr or $65 - $90 per hour
   const hourlyRangeRx =
     /([$£€])\s*(\d{2,3}(?:\.\d{1,2})?)\s*(?:\/\s*hr|\/\s*hour|per\s+hour)?\s*(?:-|–|—|to)\s*([$£€])?\s*(\d{2,3}(?:\.\d{1,2})?)\s*(?:\/\s*hr|\/\s*hour|per\s+hour|an\s+hour)/gi;
   while ((match = hourlyRangeRx.exec(content)) !== null) {
@@ -454,11 +460,12 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed hourly pay range in job post',
       };
     }
   }
 
-  // 3. Single salary figure with explicit annual/salary context: "$160,000/yr" or "salary of $150k"
   const singleAnnualRx =
     /(?:salary|compensation|base\s+pay|ote|pay)\s*(?:of|:|is|around|up\s+to)?\s*([$£€])\s*(\d{2,3}(?:,\d{3})+|\d{2,3}\s*[kK])(?:\s*\+)?|([$£€])\s*(\d{2,3}(?:,\d{3})+|\d{2,3}\s*[kK])\s*(?:\/\s*yr|\/\s*year|per\s+year|annually)/gi;
   while ((match = singleAnnualRx.exec(content)) !== null) {
@@ -474,11 +481,13 @@ export function extractSalary(text = '', structured = null) {
         period: 'year',
         raw: match[0].trim(),
         estimated: false,
+        confidence: 'high',
+        basis: 'Listed salary figure in job post',
       };
     }
   }
 
-  return { min: null, max: null, currency: 'USD', period: 'year', raw: '', estimated: false };
+  return { min: null, max: null, currency: 'USD', period: 'year', raw: '', estimated: false, confidence: 'none', basis: '' };
 }
 
 // Researched Company Monthly Stipend Benchmarks (Levels.fyi / AmbitionBox / Glassdoor 2025-2026)
@@ -625,6 +634,8 @@ export function estimateStipendBenchmark({
 
   let monthlyRange;
   let sourceLabel;
+  let confidence = 'low';
+  let basis = '';
 
   if (matchedCompanyKey) {
     const entry = COMPANY_STIPEND_BENCHMARKS[matchedCompanyKey][isIndia ? 'inr' : 'usd'];
@@ -635,6 +646,8 @@ export function estimateStipendBenchmark({
       Math.round((base[1] * roleFactor * seniorScale) / 1000) * 1000,
     ];
     sourceLabel = 'Levels.fyi / AmbitionBox est.';
+    confidence = 'med';
+    basis = `Company benchmark (${matchedCompanyKey}, ${isIndia ? 'India INR' : 'Global USD'})`;
   } else if (isIndia) {
     if (levelKey === 'intern') {
       monthlyRange = isTier1Source ? [35000, 65000] : [22000, 45000];
@@ -648,6 +661,8 @@ export function estimateStipendBenchmark({
       Math.round((monthlyRange[1] * roleFactor) / 1000) * 1000,
     ];
     sourceLabel = 'Bengaluru/India market est.';
+    confidence = 'low';
+    basis = `${isTier1Source ? 'Tier-1 ATS ' : ''}India ${levelKey} ${isTechRole ? 'tech' : 'non-tech'} market est.`;
   } else {
     if (levelKey === 'intern') {
       monthlyRange = isTier1Source ? [4500, 7500] : [2200, 4200];
@@ -661,6 +676,8 @@ export function estimateStipendBenchmark({
       Math.round((monthlyRange[1] * roleFactor) / 100) * 100,
     ];
     sourceLabel = 'Global market est.';
+    confidence = 'low';
+    basis = `${isTier1Source ? 'Tier-1 ATS ' : ''}Global ${levelKey} ${isTechRole ? 'tech' : 'non-tech'} market est.`;
   }
 
   const minAnnual = Math.round(monthlyRange[0] * 12);
@@ -674,6 +691,8 @@ export function estimateStipendBenchmark({
     period: 'year',
     raw,
     estimated: true,
+    confidence,
+    basis,
   };
 }
 
@@ -785,6 +804,7 @@ export function extractExperience(text = '', title = '') {
   const staffRx = /\b(staff|principal|distinguished|fellow|architect)\b/i;
   const leadRx = /\b(lead|tech\s+lead|team\s+lead|engineering\s+manager|manager)\b/i;
   const seniorRx = /\b(senior|sr\.?|iii|iv|v|l4|l5|l6|founding)\b/i;
+  const midTitleRx = /\b(mid[- ]level|(?:software\s+engineer|engineer|developer|sde|swe|mts|member\s+of\s+technical\s+staff|analyst|scientist|designer)[- ]*(?:2|ii)|level\s*2|l3)\b/i;
   const juniorTitleRx = /\b(junior|jr\.?|entry[- ]level|early[- ]career|new\s+grad(?:uate)?|university\s+grad(?:uate)?|recent\s+grad(?:uate)?|graduate\s+(?:engineer|developer|analyst|program|trainee)|fresher|campus|associate\s+(?:(?:software|frontend|backend|full[- ]?stack|platform|cloud|devops|data|ml|ai|security|qa|quality|test|systems|solutions|technical|research|product|ux|ui|customer\s+experience)\s+)?(?:engineer|developer|scientist|analyst|designer|manager|researcher|architect|sde|swe|pm)|(?:software|engineering|product|data|ai|ml|technical|research|design)\s+associate|apm|sde[- ]?1|sde[- ]?i\b|swe[- ]?1|swe[- ]?i\b|engineer\s+i\b|developer\s+i\b|analyst\s+i\b|level\s*1\b|l1\b|l2\b|2026|2027)\b/i;
   const fresherBodyRx = /\b(new\s+grad(?:uate)?s?|recent\s+grad(?:uate)?s?|final[- ]year|pursuing\s+a\s+(?:bachelor|master|degree|b\.?tech|b\.?e|b\.?s)|0\s*(?:-|–|to)\s*[12]\+?\s*years|less\s+than\s+[12]\s+years|no\s+prior\s+experience|entry[- ]level|early[- ]career|university\s+recruiting|fresher)\b/i;
 
@@ -806,10 +826,10 @@ export function extractExperience(text = '', title = '') {
     seniority = 'lead';
   } else if (seniorRx.test(titleStr)) {
     seniority = 'senior';
+  } else if (midTitleRx.test(titleStr)) {
+    seniority = 'mid';
   } else if (juniorTitleRx.test(titleStr) && (minYoe === null || minYoe <= 2)) {
     seniority = 'junior';
-  } else if (/\b(mid[- ]level|ii|level\s*2)\b/i.test(titleStr)) {
-    seniority = 'mid';
   } else if (
     roleCategory !== 'non_tech' &&
     !hasSeniorTitle &&
@@ -827,6 +847,84 @@ export function extractExperience(text = '', title = '') {
   }
 
   return { min: minYoe, max: maxYoe, seniority };
+}
+
+export function extractEligibility(text = '', title = '') {
+  const content = `${title || ''}\n${text || ''}`;
+  const batches = new Set();
+
+  const prefixBatchRx =
+    /(?:class\s+of|batch(?:\s+of)?|pass[- ]?outs?(?:\s+of)?|graduat(?:ing|es?|ion)\s+(?:in|of|year|batch)?|cohort(?:\s+of)?)\s*[:\-]?\s*(202[2-9](?:\s*(?:\/|,|&|and|or|-|to)\s*202[2-9])*)/gi;
+  let m;
+  while ((m = prefixBatchRx.exec(content)) !== null) {
+    for (const yr of m[1].match(/202[2-9]/g) || []) {
+      batches.add(yr);
+    }
+  }
+
+  const suffixBatchRx =
+    /(202[2-9](?:\s*(?:\/|,|&|and|or|-|to)\s*202[2-9])*)\s*(?:batch|pass[- ]?outs?|graduating(?:\s+batch)?|grads?|graduates?)/gi;
+  while ((m = suffixBatchRx.exec(content)) !== null) {
+    for (const yr of m[1].match(/202[2-9]/g) || []) {
+      batches.add(yr);
+    }
+  }
+
+  let minCgpa = null;
+  const cgpaBeforeRx = /(?:minimum|min\.?|at\s+least|cutoff|cut[- ]?off)?\s*(?:cgpa|cpi|gpa)\s*(?:of|>=|>|:|at\s+least|minimum)?\s*(\d(?:\.\d{1,2})?)(?:\s*\/\s*(4|10))?/gi;
+  while ((m = cgpaBeforeRx.exec(content)) !== null) {
+    const rawVal = Number(m[1]);
+    const scale = m[2] ? Number(m[2]) : rawVal <= 4 ? 10 : 10;
+    const normalized = m[2] === '4' ? Number(((rawVal / scale) * 10).toFixed(2)) : rawVal;
+    if (normalized >= 4 && normalized <= 10) {
+      minCgpa = minCgpa === null ? normalized : Math.max(minCgpa, normalized);
+    }
+  }
+  const cgpaAfterRx = /(\d(?:\.\d{1,2})?)\s*\+?\s*(?:\/\s*(4|10)\s*)?(?:cgpa|cpi)/gi;
+  while ((m = cgpaAfterRx.exec(content)) !== null) {
+    const rawVal = Number(m[1]);
+    const normalized = m[2] === '4' ? Number(((rawVal / 4) * 10).toFixed(2)) : rawVal;
+    if (normalized >= 4 && normalized <= 10) {
+      minCgpa = minCgpa === null ? normalized : Math.max(minCgpa, normalized);
+    }
+  }
+
+  const degrees = [];
+  const degreePatterns = [
+    ['B.Tech', /\b(?:b\.?\s*tech|bachelor\s+of\s+technology)\b/i],
+    ['B.E', /\bB\.E\.?\b|\bBE(?=\s*[/,&)])|\bbachelor\s+of\s+engineering\b/i],
+    ['M.Tech', /\b(?:m\.?\s*tech|master\s+of\s+technology)\b/i],
+    ['MCA', /\b(?:m\.?\s*c\.?\s*a|master\s+of\s+computer\s+applications)\b/i],
+    ['BCA', /\b(?:b\.?\s*c\.?\s*a|bachelor\s+of\s+computer\s+applications)\b/i],
+    ['B.Sc', /\bb\.?\s*sc\b/i],
+    ['M.Sc', /\bm\.?\s*sc\b/i],
+    ['MS', /\bm\.?\s*s\.?\s*(?:in|degree|computer|data|engineering)\b/i],
+    ['PhD', /\b(?:ph\.?\s*d|doctorate)\b/i],
+    ['Bachelor', /\bbachelor(?:'s|s)?\b/i],
+    ['Master', /\bmaster(?:'s|s)?\b/i],
+  ];
+  for (const [label, rx] of degreePatterns) {
+    if (rx.test(content)) degrees.push(label);
+  }
+
+  const branches = [];
+  const branchPatterns = [
+    ['CS', /\b(?:computer\s+science|cse?|cs\/it)\b/i],
+    ['IT', /\binformation\s+technology\b|\bCS\/IT\b|\bIT(?=\s*[,/&)]|\s+(?:branch|stream|engineering|degree|student|grad))/],
+    ['ECE', /\b(?:electronics(?:\s*(?:&|and)\s*communication)?|ece)\b/i],
+    ['EE', /\b(?:electrical\s+engineering|EEE)\b/i],
+    ['AI/DS', /\b(?:artificial\s+intelligence|data\s+science)\b/i],
+  ];
+  for (const [label, rx] of branchPatterns) {
+    if (rx.test(content)) branches.push(label);
+  }
+
+  return {
+    batches: Array.from(batches).sort(),
+    minCgpa,
+    degrees,
+    branches,
+  };
 }
 
 export function extractWorkMode(text = '', location = '', title = '', explicitRemote = null) {

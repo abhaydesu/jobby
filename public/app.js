@@ -8,6 +8,7 @@ const state = {
     workMode: '',
     seniority: 'intern,junior',
     roleCategory: 'tech',
+    batch: '',
     locationPriority: '',
     sourceType: '',
     minSalary: 0,
@@ -124,14 +125,18 @@ function fmtStipendPill(job) {
       ? `${fmtMonthlyAmount(minMo, cur)}–${fmtMonthlyAmount(maxMo, cur)}/mo`
       : `${fmtMonthlyAmount(maxMo, cur)}/mo`;
 
+  const bd = job.match_breakdown || {};
+  const conf = job.salary_confidence || bd.salaryConfidence || (job.is_salary_estimated ? 'low' : 'high');
+  const basis = job.salary_basis || bd.salaryBasis || (job.is_salary_estimated ? 'Market benchmark estimate' : 'Extracted directly from job listing');
+
   if (!job.is_salary_estimated) {
-    return `<span class="stipend-line accent-pill mono" title="Extracted directly from job listing"><span class="dot accent"></span>${esc(moRange)} <span class="stipend-note">listed</span></span>`;
+    return `<span class="stipend-line accent-pill mono" title="${esc(`Confidence: ${conf} · ${basis}`)}"><span class="dot accent"></span>${esc(moRange)} <span class="stipend-note">listed</span></span>`;
   }
   const rawNote =
     job.salary_raw && job.salary_raw.includes('(')
       ? job.salary_raw.slice(job.salary_raw.indexOf('(') + 1, job.salary_raw.lastIndexOf(')'))
       : 'benchmark est.';
-  return `<span class="stipend-line mono" title="Estimated from researched company & market benchmarks"><span class="dot muted"></span>~${esc(moRange)} <span class="stipend-note">${esc(rawNote)}</span></span>`;
+  return `<span class="stipend-line estimated mono" title="${esc(`Estimated (${conf} confidence) · Basis: ${basis}`)}"><span class="dot muted"></span>~${esc(moRange)} <span class="stipend-note">${esc(rawNote)} [${esc(conf)}]</span></span>`;
 }
 
 function timeAgo(isoStr) {
@@ -211,6 +216,7 @@ async function loadJobs() {
     workMode: f.workMode,
     seniority: f.seniority,
     roleCategory: f.roleCategory,
+    batch: f.batch || '',
     locationPriority: f.locationPriority,
     sourceType: f.sourceType,
     minSalary: String(f.minSalary),
@@ -251,6 +257,7 @@ function syncQuickIntentAndAdvBadge() {
 
   let advCount = 0;
   if (f.seniority !== 'intern,junior') advCount++;
+  if (f.batch) advCount++;
   if (f.sourceType) advCount++;
   if (f.maxAgeDays > 0) advCount++;
   if (f.minSalary > 0) advCount++;
@@ -271,6 +278,7 @@ function renderActiveFilterChips() {
   if (f.q.trim()) chips.push({ key: 'q', label: `Search: "${f.q.trim()}"` });
   if (f.seniority !== 'intern,junior') chips.push({ key: 'seniority', label: `Level: ${f.seniority}` });
   if (f.roleCategory && f.roleCategory !== 'tech') chips.push({ key: 'roleCategory', label: `Track: ${f.roleCategory}` });
+  if (f.batch) chips.push({ key: 'batch', label: f.batch === 'eligible_only' ? 'Eligible Only' : `Batch: ${f.batch}` });
   if (f.locationPriority) chips.push({ key: 'locationPriority', label: `Location: ${f.locationPriority}` });
   if (f.workMode) chips.push({ key: 'workMode', label: `Mode: ${f.workMode}` });
   if (f.minScore > 0) chips.push({ key: 'minScore', label: `Fit ≥ ${f.minScore}%` });
@@ -311,6 +319,9 @@ function renderActiveFilterChips() {
       } else if (k === 'roleCategory') {
         state.filters.roleCategory = 'tech';
         if ($('#f-role-category')) $('#f-role-category').value = 'tech';
+      } else if (k === 'batch') {
+        state.filters.batch = '';
+        if ($('#f-batch')) $('#f-batch').value = '';
       } else if (k === 'locationPriority') {
         state.filters.locationPriority = '';
         syncLocationPriorityUI('');
@@ -395,6 +406,14 @@ function buildMatchReasonLine(job) {
   }
   if (missing.length > 0) {
     parts.push(`<span>Gap: ${esc(missing.slice(0, 2).join(', '))}</span>`);
+  }
+  if (bd.eligibility?.note) {
+    parts.push(`<span>${esc(bd.eligibility.note)}</span>`);
+  } else if (bd.eligibility?.batches?.length || bd.eligibility?.minCgpa) {
+    const eligTokens = [];
+    if (bd.eligibility.batches?.length) eligTokens.push(`Batch ${bd.eligibility.batches.join('/')}`);
+    if (bd.eligibility.minCgpa) eligTokens.push(`${bd.eligibility.minCgpa}+ CGPA`);
+    if (eligTokens.length) parts.push(`<span>${esc(eligTokens.join(' · '))}</span>`);
   }
   if (job.green_flags && job.green_flags.length > 0) {
     const priorityFlag =
@@ -663,6 +682,7 @@ function resetFilters() {
     workMode: '',
     seniority: 'intern,junior',
     roleCategory: 'tech',
+    batch: '',
     locationPriority: '',
     sourceType: '',
     minSalary: 0,
@@ -683,6 +703,7 @@ function resetFilters() {
   $$('#f-work-mode .pill').forEach((p) => p.classList.toggle('active', p.dataset.value === ''));
   syncRoleScopeUI('intern,junior');
   if ($('#f-role-category')) $('#f-role-category').value = 'tech';
+  if ($('#f-batch')) $('#f-batch').value = '';
   syncLocationPriorityUI('');
   $('#f-source-type').value = '';
   $('#f-min-salary').value = '0';
@@ -1565,6 +1586,11 @@ function bindEvents() {
   });
   $('#f-role-category')?.addEventListener('change', (e) => {
     state.filters.roleCategory = e.target.value;
+    state.filters.offset = 0;
+    loadJobs();
+  });
+  $('#f-batch')?.addEventListener('change', (e) => {
+    state.filters.batch = e.target.value;
     state.filters.offset = 0;
     loadJobs();
   });

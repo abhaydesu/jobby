@@ -8,6 +8,7 @@ import {
   extractSkills,
   extractSalary,
   extractExperience,
+  extractEligibility,
   extractWorkMode,
   extractVisaSponsorship,
   classifyLocationTier,
@@ -980,5 +981,89 @@ test('City alias dedup, canonical URL multi-source merge with job_sources, and 1
   const afterExpire = queryJobs(db, {});
   assert.equal(afterExpire.total, 1);
   assert.equal(afterExpire.jobs[0].company, 'Vercel');
+  db.close();
+});
+
+test('NLP additions: SDE-2 mid-level cue, eligibility penalty & batch filter, and salary confidence', () => {
+  assert.equal(extractExperience('Building backend distributed systems.', 'Software Engineer 2').seniority, 'mid');
+  assert.equal(extractExperience('Backend services', 'SDE 2').seniority, 'mid');
+  assert.equal(extractExperience('Systems team', 'SWE II').seniority, 'mid');
+
+  const elig = extractEligibility(
+    'Open to 2025/2026 passouts from B.Tech / B.E / M.Tech / MCA in CS/IT/ECE with minimum 7.5 CGPA.',
+    'Graduate Software Engineer'
+  );
+  assert.deepEqual(elig.batches, ['2025', '2026']);
+  assert.equal(elig.minCgpa, 7.5);
+  assert.ok(elig.degrees.includes('B.Tech'));
+  assert.ok(elig.degrees.includes('M.Tech'));
+  assert.ok(elig.degrees.includes('MCA'));
+  assert.ok(elig.branches.includes('CS'));
+  assert.ok(elig.branches.includes('IT'));
+  assert.ok(elig.branches.includes('ECE'));
+
+  const highPay = extractSalary('Stipend: ₹60,000/month in Bengaluru.');
+  assert.equal(highPay.confidence, 'high');
+  const medPay = estimateStipendBenchmark({ title: 'Software Engineer Intern', company: 'Groww', location: 'Bengaluru, India', seniority: 'intern' });
+  assert.equal(medPay.confidence, 'med');
+  assert.ok(medPay.basis.includes('groww'));
+  const lowPay = estimateStipendBenchmark({ title: 'Software Engineer Intern', company: 'Stealth Startup', location: 'Bengaluru, India', seniority: 'intern', sourceType: 'workday' });
+  assert.equal(lowPay.confidence, 'low');
+
+  const job2026 = normalizeJobPayload({
+    sourceId: 'gh-razorpay',
+    sourceType: 'greenhouse',
+    externalId: 'elig-2026',
+    title: 'Software Engineer Intern',
+    company: 'Groww',
+    location: 'Bengaluru, India',
+    descriptionText: 'Eligible for 2026 batch B.Tech CS/IT with 7.0+ CGPA. TypeScript, React, Node.js, PostgreSQL.',
+    applyUrl: 'https://boards.greenhouse.io/groww/jobs/1',
+  });
+  assert.equal(job2026.salary_confidence, 'med');
+
+  const job2025 = normalizeJobPayload({
+    sourceId: 'gh-razorpay',
+    sourceType: 'greenhouse',
+    externalId: 'elig-2025',
+    title: 'Software Engineer Intern - Platform',
+    company: 'Groww',
+    location: 'Bengaluru, India',
+    descriptionText: 'Strictly for 2025 passouts B.Tech CS with 8.5 CGPA. TypeScript, React, Node.js, PostgreSQL.',
+    applyUrl: 'https://boards.greenhouse.io/groww/jobs/2',
+  });
+
+  const profile2026 = {
+    name: 'Test Student',
+    headline: '2026 CS Student',
+    target_titles: ['Software Engineer Intern'],
+    primary_skills: ['TypeScript', 'React', 'Go', 'Kubernetes'],
+    secondary_skills: [],
+    excluded_skills: [],
+    excluded_companies: [],
+    target_companies: [],
+    experience_years: 0.5,
+    preferred_seniority: ['intern', 'junior'],
+    work_modes: ['remote', 'hybrid', 'onsite'],
+    preferred_locations: ['Bengaluru', 'Remote'],
+    min_salary: 0,
+    require_visa: 0,
+    graduation_year: '2026',
+    cgpa: 7.8,
+    degree: 'B.Tech',
+  };
+
+  const fitScore = scoreJobAgainstProfile(job2026, profile2026);
+  const mismatchScore = scoreJobAgainstProfile(job2025, profile2026);
+  assert.equal(fitScore.breakdown.eligibility.fit, 'fit');
+  assert.equal(mismatchScore.breakdown.eligibility.fit, 'batch_mismatch');
+  assert.equal(fitScore.breakdown.bonusPts - mismatchScore.breakdown.bonusPts, 25);
+  assert.ok(fitScore.score > mismatchScore.score);
+
+  const db = initDb(':memory:');
+  upsertJobsBatch(db, [job2026, job2025], 'gh-razorpay');
+  const filtered2026 = queryJobs(db, { batch: '2026' });
+  assert.equal(filtered2026.total, 1);
+  assert.equal(filtered2026.jobs[0].external_id, 'elig-2026');
   db.close();
 });
