@@ -180,10 +180,20 @@
             </div>
 
             <div class="filter-group">
-              <label for="f-source-type">Source / Platform</label>
-              <select id="f-source-type">
-                <option value="">All Platforms</option>
-              </select>
+              <label for="f-source-trigger">Source / Platform</label>
+              <div class="multi-select" id="f-source-multi">
+                <button type="button" class="multi-trigger" id="f-source-trigger" aria-expanded="false">
+                  <span id="f-source-label">All Sources &amp; Platforms</span>
+                </button>
+                <div class="multi-menu hidden" id="f-source-menu">
+                  <div class="multi-menu-head">
+                    <input type="text" id="f-source-search" class="multi-search" placeholder="Filter platforms..." />
+                    <button type="button" class="btn-link" id="f-source-all">All</button>
+                    <button type="button" class="btn-link" id="f-source-clear">Clear</button>
+                  </div>
+                  <div class="multi-options" id="f-source-options"></div>
+                </div>
+              </div>
             </div>
 
             <div class="filter-group">

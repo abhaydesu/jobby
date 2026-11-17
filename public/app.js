@@ -10,7 +10,9 @@ const state = {
     roleCategory: 'tech',
     batch: '',
     locationPriority: '',
-    sourceType: '',
+    sourceMode: 'all',
+    includedSources: [],
+    excludedSources: [],
     minSalary: 0,
     maxAgeDays: 0,
     hasSalaryOnly: false,
@@ -227,7 +229,8 @@ async function loadJobs() {
     roleCategory: f.roleCategory,
     batch: f.batch || '',
     locationPriority: f.locationPriority,
-    sourceType: f.sourceType,
+    sourceType: f.sourceMode === 'include' ? (f.includedSources.length ? f.includedSources.join(',') : '__none__') : '',
+    excludeSourceType: f.sourceMode === 'exclude' ? f.excludedSources.join(',') : '',
     minSalary: String(f.minSalary),
     maxAgeDays: String(f.maxAgeDays),
     hasSalaryOnly: String(f.hasSalaryOnly),
@@ -292,7 +295,19 @@ function renderActiveFilterChips() {
   if (f.minScore > 0) chips.push({ key: 'minScore', label: `Fit ≥ ${f.minScore}%` });
   if (f.hasSalaryOnly) chips.push({ key: 'hasSalaryOnly', label: 'Disclosed Pay' });
   if (f.savedOnly) chips.push({ key: 'savedOnly', label: 'Saved Only' });
-  if (f.sourceType) chips.push({ key: 'sourceType', label: `Source: ${fmtSourceLabel(f.sourceType)}` });
+  if (f.sourceMode === 'include') {
+    if (f.includedSources.length === 0) {
+      chips.push({ key: 'sourceReset', label: 'Sources: None' });
+    } else {
+      for (const st of f.includedSources) {
+        chips.push({ key: `source_inc:${st}`, label: `Source: ${fmtSourceLabel(st)}` });
+      }
+    }
+  } else if (f.sourceMode === 'exclude') {
+    for (const st of f.excludedSources) {
+      chips.push({ key: `source_exc:${st}`, label: `Exclude: ${fmtSourceLabel(st)}` });
+    }
+  }
   if (f.maxAgeDays > 0) chips.push({ key: 'maxAgeDays', label: `Last ${f.maxAgeDays}d` });
   if (f.minSalary > 0) chips.push({ key: 'minSalary', label: `$${Math.round(f.minSalary / 1000)}k+ eq.` });
   if (f.visaOnly) chips.push({ key: 'visaOnly', label: 'Visa Sponsor' });
@@ -344,9 +359,18 @@ function renderActiveFilterChips() {
         state.filters.hasSalaryOnly = false;
       } else if (k === 'savedOnly') {
         state.filters.savedOnly = false;
-      } else if (k === 'sourceType') {
-        state.filters.sourceType = '';
-        $('#f-source-type').value = '';
+      } else if (k === 'sourceReset') {
+        state.filters.sourceMode = 'all';
+        state.filters.includedSources = [];
+        state.filters.excludedSources = [];
+      } else if (k.startsWith('source_inc:')) {
+        const st = k.slice(11);
+        state.filters.includedSources = state.filters.includedSources.filter((x) => x !== st);
+        if (state.filters.includedSources.length === 0) state.filters.sourceMode = 'all';
+      } else if (k.startsWith('source_exc:')) {
+        const st = k.slice(11);
+        state.filters.excludedSources = state.filters.excludedSources.filter((x) => x !== st);
+        if (state.filters.excludedSources.length === 0) state.filters.sourceMode = 'all';
       } else if (k === 'maxAgeDays') {
         state.filters.maxAgeDays = 0;
         $('#f-max-age').value = '0';
@@ -430,14 +454,12 @@ function renderStatsAndFacets() {
   $('#badge-crm').textContent = (s.trackedCount || 0).toLocaleString();
   $('#badge-sources').textContent = s.enabledSources || 0;
 
-  const select = $('#f-source-type');
-  const currentVal = state.filters.sourceType;
   const options = ['<option value="">All Sources &amp; Platforms</option>'];
   for (const st of state.facets.sourceTypes || []) {
     options.push(`<option value="${esc(st.type)}">${esc(fmtSourceLabel(st.type))} (${st.count})</option>`);
   }
-  select.innerHTML = options.join('');
-  select.value = currentVal;
+
+  renderSourceMultiSelect();
 
   const freshSelect = $('#fresh-source-type');
   if (freshSelect) {
@@ -445,6 +467,113 @@ function renderStatsAndFacets() {
     freshSelect.innerHTML = options.join('');
     freshSelect.value = freshVal;
   }
+}
+
+function isSourceChecked(type) {
+  const f = state.filters;
+  if (f.sourceMode === 'all') return true;
+  if (f.sourceMode === 'include') return f.includedSources.includes(type);
+  if (f.sourceMode === 'exclude') return !f.excludedSources.includes(type);
+  return true;
+}
+
+function updateSourceTriggerLabel() {
+  const labelEl = $('#f-source-label');
+  if (!labelEl) return;
+  const f = state.filters;
+  if (f.sourceMode === 'all') {
+    labelEl.textContent = 'All Sources & Platforms';
+  } else if (f.sourceMode === 'include') {
+    if (f.includedSources.length === 0) {
+      labelEl.textContent = 'No Sources Selected';
+    } else if (f.includedSources.length <= 2) {
+      labelEl.textContent = f.includedSources.map(fmtSourceLabel).join(', ');
+    } else {
+      labelEl.textContent = `${f.includedSources.length} Sources Selected`;
+    }
+  } else if (f.sourceMode === 'exclude') {
+    if (f.excludedSources.length === 1) {
+      labelEl.textContent = `All except ${fmtSourceLabel(f.excludedSources[0])}`;
+    } else {
+      labelEl.textContent = `All except ${f.excludedSources.length} sources`;
+    }
+  }
+}
+
+function renderSourceMultiSelect() {
+  const container = $('#f-source-options');
+  if (!container) return;
+  updateSourceTriggerLabel();
+  const q = ($('#f-source-search')?.value || '').trim().toLowerCase();
+  const list = (state.facets.sourceTypes || []).filter((st) => {
+    if (!q) return true;
+    return st.type.toLowerCase().includes(q) || fmtSourceLabel(st.type).toLowerCase().includes(q);
+  });
+
+  if (list.length === 0) {
+    container.innerHTML = '<div class="muted small" style="padding:10px 8px;">No matching sources</div>';
+    return;
+  }
+
+  container.innerHTML = list
+    .map((st) => {
+      const checked = isSourceChecked(st.type);
+      return `
+        <div class="multi-opt" data-type="${esc(st.type)}">
+          <label class="multi-opt-left">
+            <input type="checkbox" class="src-chk" data-type="${esc(st.type)}" ${checked ? 'checked' : ''} />
+            <span class="multi-opt-name">${esc(fmtSourceLabel(st.type))}</span>
+          </label>
+          <span class="multi-opt-right">
+            <button type="button" class="multi-only-btn" data-type="${esc(st.type)}">Only</button>
+            <span class="muted small mono">${st.count}</span>
+          </span>
+        </div>`;
+    })
+    .join('');
+
+  container.querySelectorAll('.src-chk').forEach((chk) => {
+    chk.addEventListener('change', () => {
+      const t = chk.dataset.type;
+      const f = state.filters;
+      if (f.sourceMode === 'all') {
+        if (!chk.checked) {
+          f.sourceMode = 'exclude';
+          f.excludedSources = [t];
+          f.includedSources = [];
+        }
+      } else if (f.sourceMode === 'exclude') {
+        if (chk.checked) {
+          f.excludedSources = f.excludedSources.filter((x) => x !== t);
+          if (f.excludedSources.length === 0) f.sourceMode = 'all';
+        } else if (!f.excludedSources.includes(t)) {
+          f.excludedSources.push(t);
+        }
+      } else if (f.sourceMode === 'include') {
+        if (chk.checked) {
+          if (!f.includedSources.includes(t)) f.includedSources.push(t);
+        } else {
+          f.includedSources = f.includedSources.filter((x) => x !== t);
+        }
+      }
+      state.filters.offset = 0;
+      renderSourceMultiSelect();
+      loadJobs();
+    });
+  });
+
+  container.querySelectorAll('.multi-only-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.filters.sourceMode = 'include';
+      state.filters.includedSources = [btn.dataset.type];
+      state.filters.excludedSources = [];
+      state.filters.offset = 0;
+      renderSourceMultiSelect();
+      loadJobs();
+    });
+  });
 }
 
 function syncRoleScopeUI(val) {
@@ -816,7 +945,9 @@ function resetFilters() {
     roleCategory: 'tech',
     batch: '',
     locationPriority: '',
-    sourceType: '',
+    sourceMode: 'all',
+    includedSources: [],
+    excludedSources: [],
     minSalary: 0,
     maxAgeDays: 0,
     hasSalaryOnly: false,
@@ -837,7 +968,8 @@ function resetFilters() {
   if ($('#f-role-category')) $('#f-role-category').value = 'tech';
   if ($('#f-batch')) $('#f-batch').value = '';
   syncLocationPriorityUI('');
-  $('#f-source-type').value = '';
+  if ($('#f-source-search')) $('#f-source-search').value = '';
+  renderSourceMultiSelect();
   $('#f-min-salary').value = '0';
   $('#f-max-age').value = '0';
   $('#f-has-salary').checked = false;
@@ -1735,9 +1867,38 @@ function bindEvents() {
     state.filters.offset = 0;
     loadJobs();
   });
-  $('#f-source-type').addEventListener('change', (e) => {
-    state.filters.sourceType = e.target.value;
+  $('#f-source-trigger')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#f-source-menu');
+    const trigger = $('#f-source-trigger');
+    const open = menu.classList.toggle('hidden');
+    trigger.setAttribute('aria-expanded', String(!open));
+    if (!open) $('#f-source-search')?.focus();
+  });
+  $('#f-source-menu')?.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    const menu = $('#f-source-menu');
+    const trigger = $('#f-source-trigger');
+    if (menu && !menu.classList.contains('hidden')) {
+      menu.classList.add('hidden');
+      trigger?.setAttribute('aria-expanded', 'false');
+    }
+  });
+  $('#f-source-search')?.addEventListener('input', renderSourceMultiSelect);
+  $('#f-source-all')?.addEventListener('click', () => {
+    state.filters.sourceMode = 'all';
+    state.filters.includedSources = [];
+    state.filters.excludedSources = [];
     state.filters.offset = 0;
+    renderSourceMultiSelect();
+    loadJobs();
+  });
+  $('#f-source-clear')?.addEventListener('click', () => {
+    state.filters.sourceMode = 'include';
+    state.filters.includedSources = [];
+    state.filters.excludedSources = [];
+    state.filters.offset = 0;
+    renderSourceMultiSelect();
     loadJobs();
   });
   $('#f-min-salary').addEventListener('change', (e) => {

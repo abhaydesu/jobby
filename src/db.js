@@ -1101,6 +1101,7 @@ export function queryJobs(db, params = {}) {
     batch = '',
     locationPriority = '',
     sourceType = '',
+    excludeSourceType = '',
     sourceId = '',
     company = '',
     skills = '',
@@ -1200,8 +1201,26 @@ export function queryJobs(db, params = {}) {
   }
 
   if (sourceType && sourceType !== 'all') {
-    where.push('(j.source_type = ? OR EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id = j.id AND js.source_type = ?))');
-    args.push(sourceType, sourceType);
+    const types = String(sourceType)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (types.length > 0) {
+      const ph = types.map(() => '?').join(',');
+      where.push(`(j.source_type IN (${ph}) OR EXISTS (SELECT 1 FROM job_sources js WHERE js.job_id = j.id AND js.source_type IN (${ph})))`);
+      args.push(...types, ...types);
+    }
+  }
+
+  if (excludeSourceType) {
+    const exTypes = String(excludeSourceType)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (exTypes.length > 0) {
+      where.push(`j.source_type NOT IN (${exTypes.map(() => '?').join(',')})`);
+      args.push(...exTypes);
+    }
   }
 
   if (sourceId) {

@@ -965,6 +965,12 @@ test('City alias dedup, canonical URL multi-source merge with job_sources, and 1
   assert.equal(bySecondarySource.total, 1);
   assert.equal(bySecondarySource.jobs[0].id, res.jobs[0].id);
 
+  const byMultiInclude = queryJobs(db, { sourceType: 'greenhouse,internshala' });
+  assert.equal(byMultiInclude.total, 1);
+
+  const byExclude = queryJobs(db, { excludeSourceType: 'greenhouse' });
+  assert.equal(byExclude.total, 0);
+
   const oldIso = new Date(Date.now() - 16 * 86400 * 1000).toISOString();
   const savedOld = normalizeJobPayload({
     sourceId: 'simplify-internships',

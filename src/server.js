@@ -156,6 +156,7 @@ export function createApp({ dbPath } = {}) {
           batch: sp.get('batch') || '',
           locationPriority: sp.get('locationPriority') || '',
           sourceType: sp.get('sourceType') || '',
+          excludeSourceType: sp.get('excludeSourceType') || '',
           sourceId: sp.get('sourceId') || '',
           company: sp.get('company') || '',
           skills: sp.get('skills') || '',
