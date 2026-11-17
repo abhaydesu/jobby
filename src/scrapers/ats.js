@@ -340,3 +340,124 @@ export async function scrapePinpoint(source) {
     });
   });
 }
+
+function parseWorkdayPostedDate(raw = '') {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (/today/i.test(s)) return new Date().toISOString();
+  if (/yesterday/i.test(s)) return new Date(Date.now() - 86400000).toISOString();
+  const daysMatch = /(\d+)\+?\s*days?\s+ago/i.exec(s);
+  if (daysMatch) {
+    return new Date(Date.now() - Number(daysMatch[1]) * 86400000).toISOString();
+  }
+  const parsed = Date.parse(s);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+export function parseWorkdayListings(data, detailMap = new Map(), source = {}) {
+  const { tenant = 'tenant', wdNum = 5, site = 'External', companyName } = source.config || {};
+  const hostBase = `https://${tenant}.wd${wdNum}.myworkdayjobs.com`;
+  const postings = Array.isArray(data?.jobPostings) ? data.jobPostings : [];
+
+  return postings
+    .filter((p) => p && p.title && p.externalPath)
+    .map((p) => {
+      const detail = detailMap.get(p.externalPath)?.jobPostingInfo || detailMap.get(p.externalPath) || {};
+      const location = detail.location || p.locationsText || 'Unspecified';
+      const externalUrl =
+        detail.externalUrl || `${hostBase}/${encodeURIComponent(site)}${p.externalPath}`;
+      const postedAt = detail.startDate || parseWorkdayPostedDate(detail.postedOn || p.postedOn);
+      const extId = detail.jobReqId || detail.id || p.bulletFields?.[0] || p.externalPath;
+
+      return normalizeJobPayload({
+        sourceId: source.id || `wd-${tenant}`,
+        sourceType: 'workday',
+        externalId: extId,
+        title: detail.title || p.title,
+        company: companyName || source.name || tenant,
+        location,
+        explicitRemote: /\bremote\b/i.test(location),
+        employmentType: detail.timeType || 'Full-Time',
+        descriptionHtml: detail.jobDescription || '',
+        applyUrl: externalUrl,
+        companyUrl: `${hostBase}/${encodeURIComponent(site)}`,
+        postedAt,
+      });
+    });
+}
+
+export async function scrapeWorkday(source) {
+  const { tenant, wdNum, site } = source.config;
+  const opts = reqOpts(source, 35000);
+  const cxsBase = `https://${encodeURIComponent(tenant)}.wd${wdNum}.myworkdayjobs.com/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}`;
+  const searchTerms = ['intern', 'new grad', 'university', 'graduate', 'entry level', 'associate'];
+
+  const byPath = new Map();
+  let indiaFacetQuery = null;
+
+  for (let i = 0; i < searchTerms.length; i++) {
+    const data = await fetchJson(`${cxsBase}/jobs`, {
+      ...opts,
+      method: 'POST',
+      body: { appliedFacets: {}, limit: 20, offset: 0, searchText: searchTerms[i] },
+    }).catch(() => null);
+    if (!data) continue;
+
+    if (!indiaFacetQuery && Array.isArray(data.facets)) {
+      for (const f of data.facets) {
+        const indiaVal = (f.values || []).find((v) => /^India$/i.test(String(v.descriptor || '').trim()));
+        if (indiaVal?.id && f.facetParameter) {
+          indiaFacetQuery = { [f.facetParameter]: [indiaVal.id] };
+          break;
+        }
+      }
+    }
+
+    for (const item of data.jobPostings || []) {
+      if (item?.externalPath && !byPath.has(item.externalPath)) {
+        byPath.set(item.externalPath, item);
+      }
+    }
+  }
+
+  if (indiaFacetQuery) {
+    const indiaData = await fetchJson(`${cxsBase}/jobs`, {
+      ...opts,
+      method: 'POST',
+      body: { appliedFacets: indiaFacetQuery, limit: 20, offset: 0, searchText: '' },
+    }).catch(() => null);
+    for (const item of indiaData?.jobPostings || []) {
+      if (item?.externalPath && !byPath.has(item.externalPath)) {
+        byPath.set(item.externalPath, item);
+      }
+    }
+  }
+
+  const allItems = Array.from(byPath.values());
+  const priorityCandidates = allItems
+    .filter((p) => {
+      const t = String(p.title || '');
+      const l = String(p.locationsText || '');
+      const isSenior = /\b(senior|sr\.?|staff|principal|director|vp|vice\s+president|manager)\b/i.test(t);
+      const isEarlyOrIndia = /\b(intern|co-?op|new\s+grad|graduate|university|fresher|entry|2026|2027|india|bangalore|bengaluru)\b/i.test(`${t} ${l}`);
+      return !isSenior && isEarlyOrIndia;
+    })
+    .sort((a, b) => {
+      const aIn = /india|bangalore|bengaluru/i.test(a.locationsText || '') ? 0 : 1;
+      const bIn = /india|bangalore|bengaluru/i.test(b.locationsText || '') ? 0 : 1;
+      return aIn - bIn;
+    });
+
+  const detailTargets = priorityCandidates.slice(0, 12);
+  const detailMap = new Map();
+  const detailResults = await Promise.allSettled(
+    detailTargets.map((item) => fetchJson(`${cxsBase}${item.externalPath}`, { ...opts, timeoutMs: 12000 }))
+  );
+  detailResults.forEach((r, idx) => {
+    if (r.status === 'fulfilled' && r.value) {
+      detailMap.set(detailTargets[idx].externalPath, r.value);
+    }
+  });
+
+  return parseWorkdayListings({ jobPostings: allItems }, detailMap, source);
+}

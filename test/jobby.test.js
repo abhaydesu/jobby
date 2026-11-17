@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
 import {
   stripHtmlToText,
   sanitizeHtml,
@@ -17,6 +18,7 @@ import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '.
 import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth } from '../src/db.js';
 import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
+import { parseWorkdayListings } from '../src/scrapers/ats.js';
 import { createApp } from '../src/server.js';
 
 test('NLP: HTML stripping and XSS sanitization', () => {
@@ -526,4 +528,20 @@ test('Fetch hardening: retries 429/Retry-After, caches ETag 304, and source_heal
   const recovered = recordSourceHealth(db, { sourceId: 'src-test', ok: true, jobsCount: 12, durationMs: 250 });
   assert.equal(recovered.errorStreak, 0);
   db.close();
+});
+
+test('Workday parser normalizes real CXS search + detail fixture with Bengaluru detection', () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/workday.json', import.meta.url), 'utf8'));
+  const detailMap = new Map([[fixture.jobPostings[0].externalPath, fixture.detail]]);
+  const parsed = parseWorkdayListings(fixture, detailMap, {
+    id: 'wd-walmart',
+    name: 'Walmart Global Tech',
+    config: { tenant: 'walmart', wdNum: 504, site: 'WalmartExternal', companyName: 'Walmart' },
+  });
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].source_type, 'workday');
+  assert.equal(parsed[0].seniority, 'intern');
+  assert.ok(parsed[0].apply_url.includes('WalmartExternal'));
+  assert.ok(parsed[0].description_text.includes('Bengaluru'));
+  assert.equal(classifyLocationTier(parsed[0].location, parsed[0].work_mode, parsed[0].description_text), 'bangalore');
 });

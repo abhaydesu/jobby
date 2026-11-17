@@ -9,6 +9,7 @@ import {
   scrapeRecruitee,
   scrapeRippling,
   scrapePinpoint,
+  scrapeWorkday,
 } from './ats.js';
 import {
   scrapeRemotive,
@@ -149,6 +150,19 @@ export const DEFAULT_SOURCES = [
   { id: 'sr-westerndigital', name: 'Western Digital', type: 'smartrecruiters', tier: 1, config: { slug: 'WesternDigital', companyName: 'Western Digital' } },
   { id: 'sr-nielseniq', name: 'NielsenIQ', type: 'smartrecruiters', tier: 1, config: { slug: 'NielsenIQ', companyName: 'NielsenIQ' } },
   { id: 'rippling-main', name: 'Rippling', type: 'rippling', tier: 1, config: { slug: 'rippling', companyName: 'Rippling' } },
+
+  { id: 'wd-nvidia', name: 'NVIDIA', type: 'workday', tier: 1, config: { tenant: 'nvidia', wdNum: 5, site: 'NVIDIAExternalCareerSite', companyName: 'NVIDIA', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-intel', name: 'Intel', type: 'workday', tier: 1, config: { tenant: 'intel', wdNum: 1, site: 'External', companyName: 'Intel', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-cisco', name: 'Cisco', type: 'workday', tier: 1, config: { tenant: 'cisco', wdNum: 5, site: 'Cisco_Careers', companyName: 'Cisco', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-salesforce', name: 'Salesforce', type: 'workday', tier: 1, config: { tenant: 'salesforce', wdNum: 12, site: 'External_Career_Site', companyName: 'Salesforce', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-walmart', name: 'Walmart Global Tech', type: 'workday', tier: 1, config: { tenant: 'walmart', wdNum: 504, site: 'WalmartExternal', companyName: 'Walmart', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-adobe', name: 'Adobe', type: 'workday', tier: 1, config: { tenant: 'adobe', wdNum: 5, site: 'external_experienced', companyName: 'Adobe', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-target', name: 'Target', type: 'workday', tier: 1, config: { tenant: 'target', wdNum: 5, site: 'targetcareers', companyName: 'Target', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'wd-broadcom', name: 'Broadcom', type: 'workday', tier: 1, config: { tenant: 'broadcom', wdNum: 1, site: 'External_Career', companyName: 'Broadcom', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'wd-morganstanley', name: 'Morgan Stanley', type: 'workday', tier: 1, config: { tenant: 'ms', wdNum: 5, site: 'External', companyName: 'Morgan Stanley', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'wd-hp', name: 'HP', type: 'workday', tier: 1, config: { tenant: 'hp', wdNum: 5, site: 'ExternalCareerSite', companyName: 'HP', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'wd-mastercard', name: 'Mastercard', type: 'workday', tier: 1, config: { tenant: 'mastercard', wdNum: 1, site: 'CorporateCareers', companyName: 'Mastercard', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'wd-paypal', name: 'PayPal', type: 'workday', tier: 1, config: { tenant: 'paypal', wdNum: 1, site: 'jobs', companyName: 'PayPal', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
 ];
 
 const LARGE_BOARD_IDS = new Set([
@@ -203,6 +217,7 @@ const ADAPTER_MAP = {
   recruitee: scrapeRecruitee,
   rippling: scrapeRippling,
   pinpoint: scrapePinpoint,
+  workday: scrapeWorkday,
   remotive: scrapeRemotive,
   arbeitnow: scrapeArbeitnow,
   remoteok: scrapeRemoteOK,

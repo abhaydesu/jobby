@@ -878,7 +878,7 @@ export function extractFlags({ sourceType, title = '', salaryMin, isSalaryEstima
   const body = String(text || '');
   const titleAndBody = `${title}\n${body}`;
 
-  const atsTypes = new Set(['greenhouse', 'ashby', 'lever', 'smartrecruiters', 'workable', 'recruitee', 'rippling', 'pinpoint']);
+  const atsTypes = new Set(['greenhouse', 'ashby', 'lever', 'smartrecruiters', 'workable', 'recruitee', 'rippling', 'pinpoint', 'workday', 'oracle_hcm', 'personio', 'teamtailor']);
   if (atsTypes.has(sourceType)) greenFlags.push('Direct ATS Posting');
   if (sourceType === 'simplify') greenFlags.push('Verified Early-Career Feed');
   if (sourceType === 'hackernews' || sourceType === 'yc') greenFlags.push('Direct Startup / Founder Post');
