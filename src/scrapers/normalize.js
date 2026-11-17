@@ -13,43 +13,140 @@ import {
 } from '../nlp.js';
 
 export const USER_AGENT =
-  'JobbyJobAggregator/1.0 (+https://github.com/local/jobby; personal job discovery engine)';
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-export async function fetchJson(url, options = {}) {
-  const { method = 'GET', body = null, headers = {}, timeoutMs = 15000 } = options;
-  const res = await fetch(url, {
-    method,
-    headers: {
+const HOST_NEXT_SLOT = new Map();
+
+function defaultSleep(ms) {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+function parseRetryAfterMs(headerVal) {
+  if (!headerVal) return 0;
+  const trimmed = String(headerVal).trim();
+  const secs = Number(trimmed);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const ts = Date.parse(trimmed);
+  if (Number.isFinite(ts)) return Math.max(0, ts - Date.now());
+  return 0;
+}
+
+async function waitForHostSlot(url, minGapMs, sleepFn) {
+  if (!minGapMs || minGapMs <= 0) return;
+  let host = 'default';
+  try {
+    host = new URL(url).hostname || 'default';
+  } catch {
+    host = 'default';
+  }
+  const now = Date.now();
+  const prev = HOST_NEXT_SLOT.get(host) || 0;
+  const slot = Math.max(now, prev + minGapMs);
+  HOST_NEXT_SLOT.set(host, slot);
+  const waitMs = slot - now;
+  if (waitMs > 0) await sleepFn(waitMs);
+}
+
+export async function fetchWithHardening(url, options = {}) {
+  const {
+    method = 'GET',
+    body = null,
+    headers = {},
+    timeoutMs = 20000,
+    retries = 3,
+    minGapMs = 150,
+    baseDelayMs = 400,
+    maxRetryAfterMs = 15000,
+    db = null,
+    fetchImpl = globalThis.fetch,
+    sleepImpl = defaultSleep,
+    accept = '*/*',
+  } = options;
+
+  const upperMethod = String(method).toUpperCase();
+  const cached = db && upperMethod === 'GET' ? db.prepare('SELECT etag, last_modified, body FROM http_cache WHERE url = ?').get(url) : null;
+
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    await waitForHostSlot(url, minGapMs, sleepImpl);
+
+    const reqHeaders = {
       'User-Agent': USER_AGENT,
-      Accept: 'application/json, text/plain, */*',
+      Accept: accept,
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...headers,
-    },
-    body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    };
+    if (cached && attempt === 0) {
+      if (cached.etag) reqHeaders['If-None-Match'] = cached.etag;
+      if (cached.last_modified) reqHeaders['If-Modified-Since'] = cached.last_modified;
+    }
 
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText} from ${url}`);
+    try {
+      const res = await fetchImpl(url, {
+        method: upperMethod,
+        headers: reqHeaders,
+        body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (res.status === 304 && cached) {
+        return { text: cached.body, status: 304, headers: res.headers, fromCache: true };
+      }
+
+      if (res.status === 429 || res.status >= 500) {
+        const retryAfter = parseRetryAfterMs(res.headers?.get?.('retry-after'));
+        if (attempt < retries) {
+          const exp = baseDelayMs * 2 ** attempt + Math.floor(Math.random() * 250);
+          const delay = Math.min(maxRetryAfterMs, Math.max(exp, retryAfter));
+          await sleepImpl(delay);
+          lastErr = new Error(`HTTP ${res.status} ${res.statusText} from ${url}`);
+          continue;
+        }
+        throw new Error(`HTTP ${res.status} ${res.statusText} from ${url}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText} from ${url}`);
+      }
+
+      const text = await res.text();
+      if (db && upperMethod === 'GET') {
+        const etag = res.headers?.get?.('etag') || '';
+        const lastMod = res.headers?.get?.('last-modified') || '';
+        if (etag || lastMod) {
+          db.prepare(
+            'INSERT INTO http_cache (url, etag, last_modified, body, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified, body = excluded.body, updated_at = excluded.updated_at'
+          ).run(url, etag, lastMod, text, new Date().toISOString());
+        }
+      }
+      return { text, status: res.status, headers: res.headers, fromCache: false };
+    } catch (err) {
+      lastErr = err;
+      const isHttpClientErr = /^HTTP 4\d\d\b/.test(err?.message || '') && !/^HTTP 429\b/.test(err?.message || '');
+      if (isHttpClientErr || attempt >= retries) {
+        throw err;
+      }
+      const exp = baseDelayMs * 2 ** attempt + Math.floor(Math.random() * 250);
+      await sleepImpl(Math.min(maxRetryAfterMs, exp));
+    }
   }
-  return res.json();
+  throw lastErr || new Error(`Failed to fetch ${url}`);
+}
+
+export async function fetchJson(url, options = {}) {
+  const res = await fetchWithHardening(url, {
+    accept: 'application/json, text/plain, */*',
+    ...options,
+  });
+  return JSON.parse(res.text);
 }
 
 export async function fetchText(url, options = {}) {
-  const { timeoutMs = 15000, headers = {} } = options;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html, application/xml, application/rss+xml, text/plain, */*',
-      ...headers,
-    },
-    signal: AbortSignal.timeout(timeoutMs),
+  const res = await fetchWithHardening(url, {
+    accept: 'text/html, application/xml, application/rss+xml, text/plain, */*',
+    ...options,
   });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText} from ${url}`);
-  }
-  return res.text();
+  return res.text;
 }
 
 function normalizeDedupePart(val = '') {

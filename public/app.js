@@ -898,15 +898,25 @@ async function loadCrmBoard() {
 }
 
 async function loadScraperConsole() {
-  const [srcData, statusData] = await Promise.all([api('/api/sources'), api('/api/scrape/status')]);
-  state.sources = srcData.sources || [];
+  const [srcData, statusData, healthData] = await Promise.all([
+    api('/api/sources'),
+    api('/api/scrape/status'),
+    api('/api/sources/health').catch(() => ({ health: [] })),
+  ]);
+  const healthMap = new Map((healthData.health || []).map((h) => [h.id, h]));
+  state.sources = (srcData.sources || []).map((s) => ({
+    ...s,
+    health: healthMap.get(s.id) || null,
+  }));
 
   $('#sched-enabled').checked = Boolean(statusData.schedulerEnabled);
   $('#sched-interval').value = String(statusData.intervalMins || 30);
+  const unhealthyCount = (healthData.health || []).filter((h) => Number(h.error_streak || 0) > 0).length;
   $('#sched-meta').innerHTML = `
     <p class="muted small" style="margin-top:10px;">
       Due: <strong class="mono">${statusData.dueCount}</strong> sources ·
-      State: <strong class="mono">${statusData.isRunning ? 'Running' : 'Idle'}</strong>
+      State: <strong class="mono">${statusData.isRunning ? 'Running' : 'Idle'}</strong> ·
+      Unhealthy: <strong class="mono">${unhealthyCount}</strong>
     </p>`;
 
   renderSourcesTable();
@@ -920,15 +930,22 @@ function renderSourcesTable() {
   );
 
   $('#sources-tbody').innerHTML = filtered
-    .map(
-      (s) => `
+    .map((s) => {
+      const streak = Number(s.health?.error_streak || 0);
+      const healthBadge =
+        streak >= 5 && !s.enabled
+          ? '<span class="muted small mono">auto-disabled (5/5)</span>'
+          : streak > 0
+            ? `<span class="muted small mono">streak ${streak}/5</span>`
+            : '';
+      return `
       <tr>
         <td><input type="checkbox" class="src-toggle" data-id="${esc(s.id)}" ${s.enabled ? 'checked' : ''} style="width:auto;" /></td>
         <td><strong>${esc(s.name)}</strong><div class="muted small mono">${esc(s.config?.slug || s.config?.url || s.id)}</div></td>
         <td><span class="badge-tag mono">T${s.tier} · ${esc(s.type)}</span></td>
         <td class="mono">${s.total_active_jobs || 0}</td>
         <td class="muted small mono">${s.last_scraped_at ? timeAgo(s.last_scraped_at) : 'never'}</td>
-        <td><span class="status-dot mono"><span class="dot ${s.last_status === 'success' ? 'accent' : 'muted'}"></span>${esc(s.last_status || 'pending')}</span></td>
+        <td><span class="status-dot mono"><span class="dot ${s.last_status === 'success' ? 'accent' : 'muted'}"></span>${esc(s.last_status || 'pending')}</span> ${healthBadge}</td>
         <td class="muted small mono">${s.last_duration_ms ? `${s.last_duration_ms}ms` : '—'}</td>
         <td>
           <div class="btn-row">
@@ -936,8 +953,8 @@ function renderSourcesTable() {
             <button class="btn btn-ghost btn-sm src-delete" data-id="${esc(s.id)}">Remove</button>
           </div>
         </td>
-      </tr>`
-    )
+      </tr>`;
+    })
     .join('');
 
   $$('.src-toggle').forEach((cb) => {

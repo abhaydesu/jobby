@@ -4,8 +4,12 @@
 import { fetchJson, fetchText, normalizeJobPayload } from './normalize.js';
 import { decodeHtmlEntities, stripHtmlToText } from '../nlp.js';
 
+function aggOpts(source, fallbackMs = 20000) {
+  return { timeoutMs: source?.timeoutMs || fallbackMs, db: source?.db || null };
+}
+
 export async function scrapeRemotive(source) {
-  const data = await fetchJson('https://remotive.com/api/remote-jobs?limit=120');
+  const data = await fetchJson('https://remotive.com/api/remote-jobs?limit=120', aggOpts(source));
   const items = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) =>
@@ -34,8 +38,9 @@ export async function scrapeRemotive(source) {
 
 export async function scrapeArbeitnow(source) {
   const pages = [1, 2];
+  const opts = aggOpts(source);
   const responses = await Promise.allSettled(
-    pages.map((p) => fetchJson(`https://www.arbeitnow.com/api/job-board-api?page=${p}`))
+    pages.map((p) => fetchJson(`https://www.arbeitnow.com/api/job-board-api?page=${p}`, opts))
   );
   const allItems = [];
   let firstErr = null;
@@ -74,7 +79,7 @@ export async function scrapeArbeitnow(source) {
 }
 
 export async function scrapeRemoteOK(source) {
-  const data = await fetchJson('https://remoteok.com/api');
+  const data = await fetchJson('https://remoteok.com/api', aggOpts(source));
   if (!Array.isArray(data)) return [];
   // First element is RemoteOK legal/metadata header
   const items = data.filter((item) => item && item.id && item.position).slice(0, 120);
@@ -148,7 +153,7 @@ export async function scrapeTheMuse(source) {
 }
 
 export async function scrapeHimalayas(source) {
-  const data = await fetchJson('https://himalayas.app/jobs/api?limit=80');
+  const data = await fetchJson('https://himalayas.app/jobs/api?limit=80', aggOpts(source));
   const items = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) => {
@@ -188,7 +193,7 @@ export async function scrapeHimalayas(source) {
 }
 
 export async function scrapeJobicy(source) {
-  const data = await fetchJson('https://jobicy.com/api/v2/remote-jobs?count=50');
+  const data = await fetchJson('https://jobicy.com/api/v2/remote-jobs?count=50', aggOpts(source));
   const items = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) => {
@@ -233,7 +238,7 @@ function extractXmlTag(block, tag) {
 }
 
 export async function scrapeWeWorkRemotely(source) {
-  const xml = await fetchText('https://weworkremotely.com/remote-jobs.rss');
+  const xml = await fetchText('https://weworkremotely.com/remote-jobs.rss', aggOpts(source));
   const items = [];
   const itemRx = /<item>([\s\S]*?)<\/item>/gi;
   let match;
@@ -271,16 +276,16 @@ export async function scrapeWeWorkRemotely(source) {
 }
 
 export async function scrapeHackerNewsWhoIsHiring(source) {
-  // Step 1: Locate the latest "Ask HN: Who is hiring?" thread via Algolia
+  const opts = aggOpts(source);
   const searchData = await fetchJson(
-    'https://hn.algolia.com/api/v1/search_by_date?query=%22Ask%20HN:%20Who%20is%20hiring%22&tags=story,ask_hn&hitsPerPage=5'
+    'https://hn.algolia.com/api/v1/search_by_date?query=%22Ask%20HN:%20Who%20is%20hiring%22&tags=story,ask_hn&hitsPerPage=5',
+    opts
   );
   const hits = Array.isArray(searchData?.hits) ? searchData.hits : [];
   const story = hits.find((h) => /who is hiring/i.test(h.title || '')) || hits[0];
   if (!story?.objectID) return [];
 
-  // Step 2: Pull thread comments
-  const itemData = await fetchJson(`https://hn.algolia.com/api/v1/items/${story.objectID}`);
+  const itemData = await fetchJson(`https://hn.algolia.com/api/v1/items/${story.objectID}`, opts);
   const children = Array.isArray(itemData?.children) ? itemData.children : [];
 
   const jobs = [];
@@ -326,7 +331,7 @@ export async function scrapeHackerNewsWhoIsHiring(source) {
 }
 
 export async function scrapeYCJobs(source) {
-  const data = await fetchJson('https://hn.algolia.com/api/v1/search_by_date?tags=job&hitsPerPage=60');
+  const data = await fetchJson('https://hn.algolia.com/api/v1/search_by_date?tags=job&hitsPerPage=60', aggOpts(source));
   const hits = Array.isArray(data?.hits) ? data.hits : [];
 
   return hits
@@ -356,7 +361,7 @@ export async function scrapeSimplifyGithub(source) {
   const repo = source.config?.repo || 'Summer2027-Internships';
   const defaultSeniority = source.config?.defaultSeniority || (repo.toLowerCase().includes('intern') ? 'intern' : 'junior');
   const url = `https://raw.githubusercontent.com/SimplifyJobs/${encodeURIComponent(repo)}/dev/.github/scripts/listings.json`;
-  const data = await fetchJson(url, { timeoutMs: 25000 });
+  const data = await fetchJson(url, aggOpts(source, 25000));
   if (!Array.isArray(data)) return [];
 
   const active = data.filter((item) => item && item.active !== false && item.is_visible !== false && item.url && item.title);

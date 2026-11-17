@@ -14,8 +14,8 @@ import {
   estimateStipendBenchmark,
 } from '../src/nlp.js';
 import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '../src/matcher.js';
-import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs } from '../src/db.js';
-import { normalizeJobPayload } from '../src/scrapers/normalize.js';
+import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth } from '../src/db.js';
+import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
 import { createApp } from '../src/server.js';
 
@@ -467,5 +467,63 @@ test('Role discipline classification, tightened Associate seniority, Indiana/Ind
   assert.ok(indiaOnly.jobs.every((j) => !j.location.includes('Indianapolis')));
   assert.equal(indiaOnly.total, 2);
 
+  db.close();
+});
+
+test('Fetch hardening: retries 429/Retry-After, caches ETag 304, and source_health auto-disables at 5 errors', async () => {
+  const db = initDb(':memory:');
+  let calls = 0;
+  const delays = [];
+  const fakeFetch = async (url, init) => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response('rate limit', { status: 429, headers: { 'Retry-After': '1' } });
+    }
+    if (calls === 2) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ETag: '"v1"' } });
+    }
+    assert.equal(init.headers['If-None-Match'], '"v1"');
+    return new Response(null, { status: 304 });
+  };
+
+  const first = await fetchWithHardening('https://api.example.com/jobs', {
+    db,
+    minGapMs: 0,
+    baseDelayMs: 10,
+    fetchImpl: fakeFetch,
+    sleepImpl: async (ms) => delays.push(ms),
+  });
+  assert.equal(JSON.parse(first.text).ok, true);
+  assert.equal(calls, 2);
+  assert.equal(delays[0], 1000);
+
+  const second = await fetchWithHardening('https://api.example.com/jobs', {
+    db,
+    minGapMs: 0,
+    fetchImpl: fakeFetch,
+    sleepImpl: async () => {},
+  });
+  assert.equal(second.status, 304);
+  assert.equal(second.fromCache, true);
+  assert.equal(JSON.parse(second.text).ok, true);
+
+  db.prepare("INSERT INTO sources (id, name, type, tier, config, enabled) VALUES ('src-test', 'Test Source', 'greenhouse', 1, '{}', 1)").run();
+  for (let i = 1; i <= 4; i++) {
+    const res = recordSourceHealth(db, { sourceId: 'src-test', ok: false, error: 'timeout', durationMs: 500 });
+    assert.equal(res.errorStreak, i);
+    assert.equal(res.autoDisabled, false);
+  }
+  const fifth = recordSourceHealth(db, { sourceId: 'src-test', ok: false, error: 'timeout', durationMs: 500 });
+  assert.equal(fifth.errorStreak, 5);
+  assert.equal(fifth.autoDisabled, true);
+  const src = db.prepare("SELECT enabled FROM sources WHERE id = 'src-test'").get();
+  assert.equal(src.enabled, 0);
+
+  const healthList = getSourcesHealth(db);
+  assert.equal(healthList[0].id, 'src-test');
+  assert.equal(healthList[0].error_streak, 5);
+
+  const recovered = recordSourceHealth(db, { sourceId: 'src-test', ok: true, jobsCount: 12, durationMs: 250 });
+  assert.equal(recovered.errorStreak, 0);
   db.close();
 });

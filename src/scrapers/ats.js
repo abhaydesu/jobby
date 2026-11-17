@@ -3,10 +3,14 @@
 
 import { fetchJson, normalizeJobPayload } from './normalize.js';
 
+function reqOpts(source, fallbackMs = 20000) {
+  return { timeoutMs: source?.timeoutMs || fallbackMs, db: source?.db || null };
+}
+
 export async function scrapeGreenhouse(source) {
   const { slug, companyName } = source.config;
   const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, reqOpts(source));
   const items = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) =>
@@ -29,7 +33,7 @@ export async function scrapeGreenhouse(source) {
 export async function scrapeAshby(source) {
   const { slug, companyName } = source.config;
   const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, reqOpts(source));
   const items = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) => {
@@ -85,7 +89,7 @@ export async function scrapeAshby(source) {
 export async function scrapeLever(source) {
   const { slug, companyName } = source.config;
   const url = `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`;
-  const items = await fetchJson(url);
+  const items = await fetchJson(url, reqOpts(source));
   if (!Array.isArray(items)) return [];
 
   return items.map((job) => {
@@ -132,15 +136,16 @@ export async function scrapeLever(source) {
 
 export async function scrapeSmartRecruiters(source) {
   const { slug, companyName } = source.config;
+  const opts = reqOpts(source);
   const listUrl = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=60`;
-  const data = await fetchJson(listUrl);
+  const data = await fetchJson(listUrl, opts);
   const items = Array.isArray(data?.content) ? data.content : [];
 
-  // Fetch detailed descriptions for top 20 postings to enrich skill/salary extraction
   const detailResults = await Promise.allSettled(
     items.slice(0, 20).map((item) =>
       fetchJson(`https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings/${item.id}`, {
-        timeoutMs: 10000,
+        ...opts,
+        timeoutMs: 12000,
       })
     )
   );
@@ -182,8 +187,10 @@ export async function scrapeSmartRecruiters(source) {
 
 export async function scrapeWorkable(source) {
   const { slug, companyName } = source.config;
+  const opts = reqOpts(source);
   const url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(slug)}/jobs`;
   const data = await fetchJson(url, {
+    ...opts,
     method: 'POST',
     body: { query: '', location: [], department: [], worktype: [], remote: [] },
   });
@@ -192,7 +199,8 @@ export async function scrapeWorkable(source) {
   const detailResults = await Promise.allSettled(
     items.slice(0, 20).map((item) =>
       fetchJson(`https://apply.workable.com/api/v2/accounts/${encodeURIComponent(slug)}/jobs/${item.shortcode}`, {
-        timeoutMs: 10000,
+        ...opts,
+        timeoutMs: 12000,
       })
     )
   );
@@ -226,7 +234,7 @@ export async function scrapeWorkable(source) {
 export async function scrapeRecruitee(source) {
   const { slug, companyName } = source.config;
   const url = `https://${encodeURIComponent(slug)}.recruitee.com/api/offers/`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, reqOpts(source));
   const items = Array.isArray(data?.offers) ? data.offers : [];
 
   return items.map((offer) => {
@@ -266,7 +274,7 @@ export async function scrapeRecruitee(source) {
 export async function scrapeRippling(source) {
   const { slug, companyName } = source.config;
   const url = `https://api.rippling.com/platform/api/ats/v1/board/${encodeURIComponent(slug)}/jobs`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, reqOpts(source));
   const items = Array.isArray(data) ? data : Array.isArray(data?.jobs) ? data.jobs : [];
 
   return items.map((job) => {
@@ -297,7 +305,7 @@ export async function scrapeRippling(source) {
 export async function scrapePinpoint(source) {
   const { slug, companyName } = source.config;
   const url = `https://${encodeURIComponent(slug)}.pinpointhq.com/postings.json`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, reqOpts(source));
   const items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
   return items.map((item) => {

@@ -10,6 +10,7 @@ import {
   getJobById,
   updateJobStatus,
   getAnalytics,
+  getSourcesHealth,
   syncFresherProfileAndReclassify,
 } from './db.js';
 import { parseResumeText, generateJobTailoring } from './matcher.js';
@@ -252,6 +253,10 @@ export function createApp({ dbPath } = {}) {
           message:
             'Could not automatically fingerprint Greenhouse, Ashby, Lever, Workable, SmartRecruiters, Recruitee, Rippling, Pinpoint, or Schema.org JobPosting JSON-LD on that page. Try entering the direct ATS slug manually.',
         });
+      }
+
+      if (method === 'GET' && pathname === '/api/sources/health') {
+        return sendJson(res, 200, { health: getSourcesHealth(db) });
       }
 
       const sourceMatch = /^\/api\/sources\/([^/]+)$/.exec(pathname);

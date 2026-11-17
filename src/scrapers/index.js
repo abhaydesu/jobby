@@ -23,7 +23,7 @@ import {
   scrapeSimplifyGithub,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
-import { upsertJobsBatch } from '../db.js';
+import { upsertJobsBatch, recordSourceHealth } from '../db.js';
 
 export const DEFAULT_SOURCES = [
   // Tier 2: Dedicated Early-Career & Intern/New-Grad Repositories + Startup Feeds
@@ -151,6 +151,22 @@ export const DEFAULT_SOURCES = [
   { id: 'rippling-main', name: 'Rippling', type: 'rippling', tier: 1, config: { slug: 'rippling', companyName: 'Rippling' } },
 ];
 
+const LARGE_BOARD_IDS = new Set([
+  'gh-stripe', 'gh-databricks', 'gh-cloudflare', 'gh-coinbase', 'gh-gitlab',
+  'gh-robinhood', 'gh-elastic', 'gh-anthropic', 'gh-datadog', 'gh-mongodb',
+  'gh-zscaler', 'gh-okta', 'gh-purestorage', 'gh-toast', 'gh-waymo', 'gh-canonical',
+  'ashby-openai', 'ashby-notion', 'ashby-harvey', 'lever-spotify', 'lever-zoox',
+  'lever-palantir', 'lever-paytm', 'rippling-main', 'simplify-internships', 'simplify-newgrad',
+]);
+
+export function resolveSourceScheduleMeta(s) {
+  const isLarge = LARGE_BOARD_IDS.has(s.id);
+  const timeoutMs = s.timeoutMs ?? s.config?.timeoutMs ?? (isLarge ? 45000 : 20000);
+  const weight = s.weight ?? s.config?.weight ?? (isLarge ? 3 : s.tier === 1 ? 2 : 1);
+  const pollIntervalMinutes = s.pollIntervalMinutes ?? s.config?.pollIntervalMinutes ?? (s.tier === 1 ? 30 : 20);
+  return { timeoutMs, weight, pollIntervalMinutes };
+}
+
 export function seedDefaultSources(db) {
   const deadIds = [
     'gh-retool', 'lever-plaid', 'lever-mistral', 'gh-razorpay', 'gh-postman',
@@ -163,12 +179,18 @@ export function seedDefaultSources(db) {
   db.prepare(`DELETE FROM jobs WHERE source_id IN (${placeholders})`).run(...deadIds);
   db.prepare(`DELETE FROM sources WHERE id IN (${placeholders})`).run(...deadIds);
 
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
+  const upsert = db.prepare(`
+    INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
     VALUES (?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      config = excluded.config,
+      scrape_interval_mins = excluded.scrape_interval_mins
   `);
   for (const s of DEFAULT_SOURCES) {
-    insert.run(s.id, s.name, s.type, s.tier, JSON.stringify(s.config), s.tier === 1 ? 30 : 20);
+    const meta = resolveSourceScheduleMeta(s);
+    const enrichedConfig = { ...s.config, ...meta };
+    upsert.run(s.id, s.name, s.type, s.tier, JSON.stringify(enrichedConfig), meta.pollIntervalMinutes);
   }
 }
 
@@ -202,15 +224,18 @@ export function hydrateSourceRow(row) {
   } catch {
     config = {};
   }
+  const meta = resolveSourceScheduleMeta({ ...row, config });
   return {
     ...row,
     config,
+    ...meta,
     enabled: Boolean(row.enabled),
   };
 }
 
 export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
   const source = hydrateSourceRow(sourceRow);
+  source.db = db;
   const adapter = ADAPTER_MAP[source.type];
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
@@ -220,6 +245,7 @@ export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
     db.prepare(
       'UPDATE sources SET last_scraped_at = ?, last_status = ?, last_error = ?, last_duration_ms = ? WHERE id = ?'
     ).run(startedAt, 'error', errMsg, 0, source.id);
+    recordSourceHealth(db, { sourceId: source.id, ok: false, error: errMsg, durationMs: 0 });
     return { sourceId: source.id, name: source.name, status: 'error', fetched: 0, newCount: 0, updatedCount: 0, error: errMsg, durationMs: 0 };
   }
 
@@ -236,6 +262,13 @@ export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
         last_duration_ms = ?, jobs_found_last = ?
       WHERE id = ?
     `).run(finishedAt, durationMs, validJobs.length, source.id);
+
+    recordSourceHealth(db, {
+      sourceId: source.id,
+      ok: true,
+      jobsCount: validJobs.length,
+      durationMs,
+    });
 
     db.prepare(`
       INSERT INTO scrape_logs (run_id, source_id, source_name, started_at, finished_at, duration_ms, status, fetched_count, new_count, updated_count, error_message)
@@ -265,6 +298,13 @@ export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
       WHERE id = ?
     `).run(finishedAt, errMsg, durationMs, source.id);
 
+    recordSourceHealth(db, {
+      sourceId: source.id,
+      ok: false,
+      error: errMsg,
+      durationMs,
+    });
+
     db.prepare(`
       INSERT INTO scrape_logs (run_id, source_id, source_name, started_at, finished_at, duration_ms, status, fetched_count, new_count, updated_count, error_message)
       VALUES (?, ?, ?, ?, ?, ?, 'error', 0, 0, 0, ?)
@@ -285,17 +325,22 @@ export async function scrapeSingleSource(db, sourceRow, runId = 'manual') {
 }
 
 export async function runConcurrentPool(items, concurrency, fn) {
+  const ordered = [...items].sort((a, b) => {
+    const wa = resolveSourceScheduleMeta(hydrateSourceRow(a) || a).weight;
+    const wb = resolveSourceScheduleMeta(hydrateSourceRow(b) || b).weight;
+    return wb - wa;
+  });
   const results = [];
   let idx = 0;
 
   async function worker() {
-    while (idx < items.length) {
-      const current = items[idx++];
+    while (idx < ordered.length) {
+      const current = ordered[idx++];
       results.push(await fn(current));
     }
   }
 
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  const workers = Array.from({ length: Math.min(concurrency, ordered.length) }, () => worker());
   await Promise.all(workers);
   return results;
 }

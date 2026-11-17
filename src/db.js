@@ -142,6 +142,24 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS http_cache (
+      url TEXT PRIMARY KEY,
+      etag TEXT DEFAULT '',
+      last_modified TEXT DEFAULT '',
+      body TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS source_health (
+      source_id TEXT PRIMARY KEY,
+      last_ok_at TEXT,
+      last_error TEXT DEFAULT '',
+      error_streak INTEGER NOT NULL DEFAULT 0,
+      jobs_last_run INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Seed default profile if empty
@@ -231,6 +249,76 @@ export function setSetting(db, key, value) {
     key,
     String(value)
   );
+}
+
+export function getHttpCache(db, url) {
+  return db.prepare('SELECT url, etag, last_modified, body, updated_at FROM http_cache WHERE url = ?').get(url) || null;
+}
+
+export function setHttpCache(db, { url, etag = '', lastModified = '', body = '' }) {
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO http_cache (url, etag, last_modified, body, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified, body = excluded.body, updated_at = excluded.updated_at'
+  ).run(url, etag, lastModified, body, now);
+}
+
+export function recordSourceHealth(db, { sourceId, ok, error = '', jobsCount = 0, durationMs = 0 }) {
+  const now = new Date().toISOString();
+  if (ok) {
+    db.prepare(`
+      INSERT INTO source_health (source_id, last_ok_at, last_error, error_streak, jobs_last_run, duration_ms, updated_at)
+      VALUES (?, ?, '', 0, ?, ?, ?)
+      ON CONFLICT(source_id) DO UPDATE SET
+        last_ok_at = excluded.last_ok_at,
+        last_error = '',
+        error_streak = 0,
+        jobs_last_run = excluded.jobs_last_run,
+        duration_ms = excluded.duration_ms,
+        updated_at = excluded.updated_at
+    `).run(sourceId, now, Number(jobsCount) || 0, Number(durationMs) || 0, now);
+    return { sourceId, errorStreak: 0, autoDisabled: false };
+  }
+
+  db.prepare(`
+    INSERT INTO source_health (source_id, last_ok_at, last_error, error_streak, jobs_last_run, duration_ms, updated_at)
+    VALUES (?, NULL, ?, 1, 0, ?, ?)
+    ON CONFLICT(source_id) DO UPDATE SET
+      last_error = excluded.last_error,
+      error_streak = source_health.error_streak + 1,
+      duration_ms = excluded.duration_ms,
+      updated_at = excluded.updated_at
+  `).run(sourceId, String(error || '').slice(0, 300), Number(durationMs) || 0, now);
+
+  const row = db.prepare('SELECT error_streak FROM source_health WHERE source_id = ?').get(sourceId);
+  const errorStreak = Number(row?.error_streak ?? 1);
+  let autoDisabled = false;
+  if (errorStreak >= 5) {
+    const upd = db.prepare('UPDATE sources SET enabled = 0 WHERE id = ? AND enabled = 1').run(sourceId);
+    autoDisabled = Number(upd?.changes ?? 0) > 0;
+  }
+  return { sourceId, errorStreak, autoDisabled };
+}
+
+export function getSourcesHealth(db) {
+  return db
+    .prepare(`
+      SELECT
+        s.id,
+        s.name,
+        s.type,
+        s.tier,
+        s.enabled,
+        COALESCE(h.last_ok_at, CASE WHEN s.last_status = 'success' THEN s.last_scraped_at ELSE NULL END) AS last_ok_at,
+        COALESCE(NULLIF(h.last_error, ''), s.last_error, '') AS last_error,
+        COALESCE(h.error_streak, 0) AS error_streak,
+        COALESCE(h.jobs_last_run, s.jobs_found_last, 0) AS jobs_last_run,
+        COALESCE(h.duration_ms, s.last_duration_ms, 0) AS duration_ms,
+        COALESCE(h.updated_at, s.last_scraped_at) AS updated_at
+      FROM sources s
+      LEFT JOIN source_health h ON h.source_id = s.id
+      ORDER BY COALESCE(h.error_streak, 0) DESC, s.enabled ASC, s.tier ASC, s.name ASC
+    `)
+    .all();
 }
 
 export function getProfile(db) {
