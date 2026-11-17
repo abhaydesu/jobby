@@ -1,0 +1,9 @@
+data/
+*.db
+*.db-wal
+*.db-shm
+.env*
+*cookie*
+*token*
+.DS_Store
+node_modules/

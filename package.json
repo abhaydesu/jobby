@@ -1,0 +1,16 @@
+{
+  "name": "jobby",
+  "version": "1.0.0",
+  "description": "Autonomous Multi-Source Job Board, Direct ATS Scraper & Profile Match Engine",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "scrape": "node src/server.js --scrape-once",
+    "test": "node --test test/jobby.test.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}

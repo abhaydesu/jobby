@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jobby — Intern &amp; New-Grad Job Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Minimalist Monochrome Header (Aside + Aceternity style) -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="topbar-left">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="2" width="5" height="5" stroke="currentColor" stroke-width="1.5" />
+                <rect x="9" y="2" width="5" height="5" fill="currentColor" />
+                <rect x="2" y="9" width="5" height="5" fill="currentColor" fill-opacity="0.35" />
+                <rect x="9" y="9" width="5" height="5" stroke="currentColor" stroke-width="1.5" />
+              </svg>
+            </div>
+            <span class="brand-name">jobby</span>
+            <span class="brand-divider">/</span>
+            <span class="brand-tag mono">26–27</span>
+          </div>
+
+          <nav class="nav-tabs" role="tablist">
+            <button class="nav-tab active" data-tab="feed" role="tab">
+              Feed <span class="nav-badge mono" id="badge-feed">0</span>
+            </button>
+            <button class="nav-tab" data-tab="crm" role="tab">
+              Pipeline <span class="nav-badge mono" id="badge-crm">0</span>
+            </button>
+            <button class="nav-tab" data-tab="scraper" role="tab">
+              Scrapers <span class="nav-badge mono" id="badge-sources">0</span>
+            </button>
+            <button class="nav-tab" data-tab="profile" role="tab">Profile</button>
+            <button class="nav-tab" data-tab="analytics" role="tab">Analytics</button>
+            <button class="nav-tab" data-tab="research" role="tab">Architecture</button>
+          </nav>
+        </div>
+
+        <div class="topbar-right">
+          <div class="daemon-pill" id="daemon-pill" title="Background Continuous Scraper">
+            <span class="status-led" id="daemon-dot"></span>
+            <span class="mono" id="daemon-label">Ready</span>
+          </div>
+          <button class="btn btn-primary" id="btn-global-scrape">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <polyline points="21 3 21 9 15 9" />
+            </svg>
+            Scrape
+          </button>
+          <button class="btn btn-ghost btn-icon-only" id="btn-theme-toggle" title="Toggle Dark/Light Theme" aria-label="Toggle Theme">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 3v18" />
+              <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Live Scrape Telemetry Bar -->
+    <div class="live-banner hidden" id="live-banner">
+      <div class="live-banner-inner">
+        <div class="live-banner-top">
+          <div class="live-banner-title">
+            <span class="spinner"></span>
+            <span id="live-banner-text">Syncing ATS endpoints...</span>
+          </div>
+          <div class="live-banner-stats mono" id="live-banner-stats">0 / 0</div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="live-progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <main class="main-frame">
+      <!-- TAB 1: JOB FEED -->
+      <section class="tab-panel active" id="panel-feed">
+        <!-- Spacious 4-Cell Summary Grid -->
+        <div class="arch-hero">
+          <div class="arch-cell arch-span-2 spotlight-card">
+            <div class="cell-head">
+              <span class="eyebrow mono">ROLE SCOPE</span>
+              <span class="stat-inline mono"><strong id="kpi-total">0</strong> openings</span>
+            </div>
+            <h1 class="hero-title">Internships &amp; Fresher Roles</h1>
+            <p class="hero-desc">Scoped for final-year college students and 2026/27 graduates. <span class="mono" id="kpi-role-split">0 intern · 0 grad</span></p>
+            <div class="segmented-bar" id="bento-role-scope">
+              <button class="seg-btn active" data-seniority="intern,junior">Intern &amp; Fresher</button>
+              <button class="seg-btn" data-seniority="intern">Internships</button>
+              <button class="seg-btn" data-seniority="junior">New Grad / SDE-1</button>
+              <button class="seg-btn" data-seniority="all">All Levels</button>
+            </div>
+          </div>
+
+          <div class="arch-cell arch-span-2 spotlight-card">
+            <div class="cell-head">
+              <span class="eyebrow mono">LOCATION PRIORITY</span>
+              <span class="stat-inline mono"><strong id="kpi-blr">0</strong> BLR · <strong id="kpi-remote">0</strong> Remote</span>
+            </div>
+            <h2 class="hero-title-sm">Bengaluru &amp; Remote First</h2>
+            <p class="hero-desc">Ranks Bengaluru and Remote at the top while keeping India hubs and global roles accessible below.</p>
+            <div class="segmented-bar" id="bento-loc-priority">
+              <button class="seg-btn active" data-loc="">Priority Order</button>
+              <button class="seg-btn" data-loc="bangalore">Bengaluru</button>
+              <button class="seg-btn" data-loc="remote">Remote</button>
+              <button class="seg-btn" data-loc="india">India Hubs</button>
+              <button class="seg-btn" data-loc="global">Global</button>
+            </div>
+          </div>
+
+          <div class="arch-cell arch-stat spotlight-card">
+            <span class="eyebrow mono">FIT ≥ 80%</span>
+            <div class="stat-figure mono" id="kpi-high">0</div>
+            <div class="stat-caption">Strong profile matches</div>
+          </div>
+
+          <div class="arch-cell arch-stat spotlight-card">
+            <span class="eyebrow mono">INGESTION</span>
+            <div class="stat-figure mono" id="kpi-new">0</div>
+            <div class="stat-caption"><span class="mono" id="kpi-sources">0</span> feeds · <span class="mono" id="kpi-tracked">0</span> tracked</div>
+          </div>
+        </div>
+
+        <!-- Two-Column Workspace -->
+        <div class="workspace-grid">
+          <aside class="filter-rail">
+            <div class="rail-head">
+              <span class="eyebrow mono">FILTERS</span>
+              <button class="btn-link" id="btn-reset-filters">Reset</button>
+            </div>
+
+            <div class="filter-group">
+              <label for="f-search">Search</label>
+              <div class="search-wrap">
+                <input type="text" id="f-search" placeholder="Title, company, skill..." />
+                <kbd class="kbd-hint mono">⌘K</kbd>
+              </div>
+            </div>
+
+            <div class="filter-group">
+              <label>Quick Intent</label>
+              <div class="intent-grid">
+                <button class="intent-btn" id="qf-high-fit" type="button">
+                  <span class="dot accent"></span> Fit ≥ 80%
+                </button>
+                <button class="intent-btn" id="qf-disclosed" type="button">
+                  <span class="dot accent"></span> Disclosed Pay
+                </button>
+                <button class="intent-btn" id="qf-saved" type="button">
+                  <span class="dot muted"></span> Saved Only
+                </button>
+              </div>
+            </div>
+
+            <div class="filter-group">
+              <label for="f-role-category">Role Track</label>
+              <select id="f-role-category">
+                <option value="tech" selected>All Tech &amp; Product (No Sales/HR/Ops)</option>
+                <option value="swe">Software Engineering (Full-Stack / BE / FE)</option>
+                <option value="ai_data">AI / ML / Data Science &amp; Eng</option>
+                <option value="devops_sec">Cloud / DevOps / SRE / Security</option>
+                <option value="product_design">Product / Design / Solutions Eng</option>
+                <option value="all">All Functions (Include Sales, Ops, HR)</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label>Work Mode</label>
+              <div class="pill-group" id="f-work-mode">
+                <button class="pill active" data-value="">All</button>
+                <button class="pill" data-value="remote">Remote</button>
+                <button class="pill" data-value="hybrid">Hybrid</button>
+                <button class="pill" data-value="onsite">Onsite</button>
+              </div>
+            </div>
+
+            <div class="filter-group">
+              <label>Top Stack</label>
+              <div class="skill-cloud" id="f-skill-cloud"></div>
+            </div>
+
+            <details class="adv-filters" id="adv-filters-details">
+              <summary class="adv-summary" id="adv-filters-summary">
+                <span>More Filters</span>
+                <span class="mono adv-count" id="adv-filters-count"></span>
+              </summary>
+              <div class="adv-body">
+                <div class="filter-group">
+                  <label for="f-seniority">Experience Level</label>
+                  <select id="f-seniority">
+                    <option value="intern,junior" selected>Intern &amp; Fresher</option>
+                    <option value="intern">Internships Only</option>
+                    <option value="junior">New Grad / SDE-1</option>
+                    <option value="mid">Mid-Level</option>
+                    <option value="senior">Senior</option>
+                    <option value="all">All Levels</option>
+                  </select>
+                </div>
+
+                <div class="filter-group">
+                  <label for="f-source-type">Source / ATS</label>
+                  <select id="f-source-type">
+                    <option value="">All Platforms</option>
+                  </select>
+                </div>
+
+                <div class="filter-group">
+                  <label for="f-max-age">Posted Window</label>
+                  <select id="f-max-age">
+                    <option value="0">Any Time</option>
+                    <option value="1">Last 24 Hours</option>
+                    <option value="3">Last 3 Days</option>
+                    <option value="7">Last 7 Days</option>
+                    <option value="30">Last 30 Days</option>
+                  </select>
+                </div>
+
+                <div class="filter-group">
+                  <label for="f-min-salary">Min Annualized Pay</label>
+                  <select id="f-min-salary">
+                    <option value="0">Any</option>
+                    <option value="60000">$60k+ eq.</option>
+                    <option value="100000">$100k+ eq.</option>
+                    <option value="140000">$140k+ eq.</option>
+                    <option value="180000">$180k+ eq.</option>
+                  </select>
+                </div>
+
+                <div class="filter-group">
+                  <div class="label-row">
+                    <label for="f-min-score">Min Match</label>
+                    <span class="mono val-text" id="f-min-score-val">0%</span>
+                  </div>
+                  <input type="range" id="f-min-score" min="0" max="90" step="5" value="0" />
+                </div>
+
+                <div class="filter-group checkboxes">
+                  <label class="check-label">
+                    <input type="checkbox" id="f-has-salary" /> Disclosed Pay Only
+                  </label>
+                  <label class="check-label">
+                    <input type="checkbox" id="f-visa" /> Visa Sponsorship
+                  </label>
+                  <label class="check-label">
+                    <input type="checkbox" id="f-hide-dismissed" checked /> Hide Dismissed
+                  </label>
+                </div>
+              </div>
+            </details>
+          </aside>
+
+          <div class="feed-column">
+            <div class="feed-bar">
+              <div class="feed-count mono" id="feed-count-text">Loading openings...</div>
+              <div class="feed-controls">
+                <label class="inline-label" for="f-sort">Order</label>
+                <select id="f-sort">
+                  <option value="match">Priority (BLR &amp; Remote) + Fit</option>
+                  <option value="score">Highest Match Score</option>
+                  <option value="newest">Priority + Newest</option>
+                  <option value="salary">Highest Stipend / Salary</option>
+                  <option value="company">Company A–Z</option>
+                </select>
+              </div>
+            </div>
+            <div class="active-chips-bar hidden" id="active-filter-chips"></div>
+
+            <div class="jobs-stack" id="jobs-list"></div>
+
+            <div class="pagination-bar hidden" id="pagination-bar">
+              <button class="btn btn-secondary btn-sm" id="btn-prev-page">Previous</button>
+              <span class="mono small muted" id="page-indicator">Page 1</span>
+              <button class="btn btn-secondary btn-sm" id="btn-next-page">Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: PIPELINE CRM KANBAN -->
+      <section class="tab-panel" id="panel-crm">
+        <div class="section-head">
+          <div>
+            <h2>Application Pipeline</h2>
+            <p class="muted">Track shortlisted roles from initial save through technical interviews and offer.</p>
+          </div>
+          <button class="btn btn-secondary" id="btn-refresh-crm">Refresh</button>
+        </div>
+        <div class="kanban-board" id="kanban-board"></div>
+      </section>
+
+      <!-- TAB 3: SCRAPER ENGINE & ATS DIRECTORY -->
+      <section class="tab-panel" id="panel-scraper">
+        <div class="section-head">
+          <div>
+            <h2>Scraper Engine &amp; ATS Registry</h2>
+            <p class="muted">Manage direct Tier 1 ATS endpoints, community startup feeds, global boards, and URL fingerprinting.</p>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="btn-scrape-ats">Scrape ATS Only</button>
+            <button class="btn btn-secondary" id="btn-scrape-aggs">Scrape Aggregators</button>
+            <button class="btn btn-primary" id="btn-scrape-all-2">Scrape All</button>
+          </div>
+        </div>
+
+        <div class="two-col-cards">
+          <div class="panel-box spotlight-card">
+            <h3>Continuous Background Scheduler</h3>
+            <p class="muted small">Automatically polls due ATS boards and feeds on your configured cadence.</p>
+            <div class="form-row">
+              <label class="check-label">
+                <input type="checkbox" id="sched-enabled" checked /> Enable Continuous Auto-Scraping
+              </label>
+            </div>
+            <div class="form-row">
+              <label for="sched-interval" class="small muted">Interval</label>
+              <select id="sched-interval">
+                <option value="15">Every 15 min</option>
+                <option value="30" selected>Every 30 min</option>
+                <option value="60">Every 1 hr</option>
+                <option value="180">Every 3 hr</option>
+                <option value="360">Every 6 hr</option>
+              </select>
+              <button class="btn btn-primary" id="btn-save-sched">Save</button>
+            </div>
+            <div class="sched-meta" id="sched-meta"></div>
+          </div>
+
+          <div class="panel-box spotlight-card">
+            <h3>Auto-Discover Company Career Page</h3>
+            <p class="muted small">Paste any company careers URL to fingerprint its ATS or extract Schema.org JobPosting JSON-LD.</p>
+            <div class="form-row">
+              <input type="text" id="discover-url" placeholder="https://company.com/careers" />
+              <button class="btn btn-primary" id="btn-discover-url">Detect</button>
+            </div>
+            <div id="discover-result" class="discover-result hidden"></div>
+
+            <div class="divider"></div>
+            <h4>Add ATS Slug Manually</h4>
+            <div class="inline-form-grid">
+              <input type="text" id="add-src-name" placeholder="Company Name" />
+              <select id="add-src-type">
+                <option value="greenhouse">Greenhouse</option>
+                <option value="ashby">Ashby</option>
+                <option value="lever">Lever</option>
+                <option value="smartrecruiters">SmartRecruiters</option>
+                <option value="workable">Workable</option>
+                <option value="recruitee">Recruitee</option>
+                <option value="rippling">Rippling</option>
+                <option value="pinpoint">Pinpoint</option>
+                <option value="simplify">Simplify (GitHub)</option>
+              </select>
+              <input type="text" id="add-src-slug" placeholder="Slug" />
+              <button class="btn btn-secondary" id="btn-add-source">Add</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-box table-card">
+          <div class="card-header-row">
+            <h3>Monitored Sources</h3>
+            <input type="text" id="source-search" class="compact-input" placeholder="Filter sources..." />
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>On</th>
+                  <th>Source</th>
+                  <th>Tier / ATS</th>
+                  <th>Jobs</th>
+                  <th>Last Run</th>
+                  <th>Status</th>
+                  <th>Latency</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="sources-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel-box table-card">
+          <h3>Recent Scrape Logs</h3>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th>Fetched</th>
+                  <th>New</th>
+                  <th>Updated</th>
+                  <th>Duration</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody id="logs-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: PROFILE & RESUME STUDIO -->
+      <section class="tab-panel" id="panel-profile">
+        <div class="section-head">
+          <div>
+            <h2>Profile &amp; Resume Scoring</h2>
+            <p class="muted">Adjust your stack, target roles, and scoring weights. Saving immediately re-scores every opening.</p>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" data-preset="student_swe">Preset: SWE</button>
+            <button class="btn btn-secondary" data-preset="student_ai">Preset: AI / ML</button>
+            <button class="btn btn-secondary" data-preset="student_backend">Preset: Backend</button>
+            <button class="btn btn-primary" id="btn-save-profile">Save &amp; Re-Score</button>
+          </div>
+        </div>
+
+        <div class="two-col-cards">
+          <div class="panel-box spotlight-card">
+            <h3>Resume Parser</h3>
+            <p class="muted small">Paste plain resume text to automatically extract technical skills and target roles.</p>
+            <textarea id="prof-resume" rows="12" placeholder="Paste your resume text..."></textarea>
+            <div class="btn-row" style="margin-top: 10px;">
+              <button class="btn btn-primary" id="btn-parse-resume">Extract from Resume</button>
+              <span class="muted small" id="parse-status"></span>
+            </div>
+          </div>
+
+          <div class="panel-box spotlight-card">
+            <h3>Candidate Configuration</h3>
+            <div class="form-grid-2">
+              <div class="field">
+                <label for="prof-name">Name</label>
+                <input type="text" id="prof-name" />
+              </div>
+              <div class="field">
+                <label for="prof-yoe">Years of Experience</label>
+                <input type="number" id="prof-yoe" min="0" max="40" step="0.5" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="prof-headline">Headline</label>
+              <input type="text" id="prof-headline" />
+            </div>
+
+            <div class="field">
+              <label for="prof-titles">Target Titles</label>
+              <input type="text" id="prof-titles" />
+            </div>
+
+            <div class="field">
+              <label for="prof-primary-skills">Primary Skills</label>
+              <textarea id="prof-primary-skills" rows="2"></textarea>
+            </div>
+
+            <div class="field">
+              <label for="prof-secondary-skills">Secondary Skills</label>
+              <textarea id="prof-secondary-skills" rows="2"></textarea>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label for="prof-min-salary">Min Annual Comp (0 = All)</label>
+                <input type="number" id="prof-min-salary" step="5000" />
+              </div>
+              <div class="field">
+                <label for="prof-locations">Priority Locations</label>
+                <input type="text" id="prof-locations" />
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label>Work Modes</label>
+                <div class="checkbox-row" id="prof-work-modes">
+                  <label class="check-label"><input type="checkbox" value="remote" /> Remote</label>
+                  <label class="check-label"><input type="checkbox" value="hybrid" /> Hybrid</label>
+                  <label class="check-label"><input type="checkbox" value="onsite" /> Onsite</label>
+                </div>
+              </div>
+              <div class="field">
+                <label>Seniority</label>
+                <div class="checkbox-row" id="prof-seniority">
+                  <label class="check-label"><input type="checkbox" value="intern" /> Intern</label>
+                  <label class="check-label"><input type="checkbox" value="junior" /> New Grad</label>
+                  <label class="check-label"><input type="checkbox" value="mid" /> Mid</label>
+                  <label class="check-label"><input type="checkbox" value="senior" /> Senior</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label for="prof-target-companies">Target Companies (+8)</label>
+                <input type="text" id="prof-target-companies" />
+              </div>
+              <div class="field">
+                <label for="prof-excluded-skills">Excluded Keywords</label>
+                <input type="text" id="prof-excluded-skills" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="check-label">
+                <input type="checkbox" id="prof-visa" /> Require Visa Sponsorship
+              </label>
+            </div>
+
+            <div class="divider"></div>
+            <h4>Scoring Weights</h4>
+            <div class="weights-grid">
+              <div><label>Title <span class="mono" id="w-title-v">30</span></label><input type="range" id="w-title" min="5" max="60" value="30" /></div>
+              <div><label>Skills <span class="mono" id="w-skills-v">35</span></label><input type="range" id="w-skills" min="5" max="60" value="35" /></div>
+              <div><label>Location <span class="mono" id="w-location-v">15</span></label><input type="range" id="w-location" min="0" max="40" value="15" /></div>
+              <div><label>Salary <span class="mono" id="w-salary-v">10</span></label><input type="range" id="w-salary" min="0" max="40" value="10" /></div>
+              <div><label>Exp <span class="mono" id="w-exp-v">10</span></label><input type="range" id="w-exp" min="0" max="40" value="10" /></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: MARKET ANALYTICS -->
+      <section class="tab-panel" id="panel-analytics">
+        <div class="section-head">
+          <div>
+            <h2>Market Analytics</h2>
+            <p class="muted">Live distributions across all active postings indexed in SQLite.</p>
+          </div>
+          <button class="btn btn-secondary" id="btn-refresh-analytics">Refresh</button>
+        </div>
+        <div class="analytics-grid" id="analytics-grid"></div>
+      </section>
+
+      <!-- TAB 6: SCRAPING RESEARCH HUB -->
+      <section class="tab-panel" id="panel-research">
+        <div class="section-head">
+          <div>
+            <h2>Ingestion Architecture &amp; Research</h2>
+            <p class="muted">Technical breakdown of ATS public JSON APIs, career page fingerprinting, and deduplication.</p>
+          </div>
+        </div>
+        <div class="panel-box research-card" id="research-content">Loading architecture documentation...</div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Slide-Over Sheet (Aside-inspired Drawer) -->
+  <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+  <aside class="job-drawer hidden" id="job-drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div class="drawer-header-top">
+        <div class="drawer-company-row">
+          <span class="badge-tag mono" id="d-source-badge">ATS</span>
+          <span class="drawer-company" id="d-company">Company</span>
+        </div>
+        <div class="drawer-nav-btns">
+          <button class="btn btn-secondary btn-sm mono" id="btn-prev-job" title="Previous (K)">↑ Prev</button>
+          <button class="btn btn-secondary btn-sm mono" id="btn-next-job" title="Next (J)">↓ Next</button>
+          <button class="btn btn-ghost btn-icon-only" id="btn-close-drawer" title="Close (Esc)" aria-label="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <h2 class="drawer-title" id="d-title">Job Title</h2>
+      <div class="drawer-meta-row" id="d-meta-row"></div>
+      <div class="drawer-actions-row">
+        <a class="btn btn-primary" id="d-apply-link" href="#" target="_blank" rel="noopener noreferrer">
+          Apply Direct
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 17 17 7M7 7h10v10" />
+          </svg>
+        </a>
+        <select id="d-status-select" class="status-select">
+          <option value="new">Status: New</option>
+          <option value="saved">Saved / Shortlist</option>
+          <option value="applied">Applied</option>
+          <option value="screen">Recruiter Screen</option>
+          <option value="interview">Technical Interview</option>
+          <option value="offer">Offer</option>
+          <option value="rejected">Rejected</option>
+          <option value="dismissed">Dismissed</option>
+        </select>
+      </div>
+      <div class="drawer-tabs">
+        <button class="drawer-tab active" data-dtab="overview">Match &amp; Description</button>
+        <button class="drawer-tab" data-dtab="tailor">Tailoring &amp; Outreach</button>
+        <button class="drawer-tab" data-dtab="notes">Notes</button>
+      </div>
+    </div>
+
+    <div class="drawer-body">
+      <div class="drawer-subpanel active" id="dpanel-overview">
+        <div class="match-panel" id="d-match-panel"></div>
+        <div class="skills-compare" id="d-skills-compare"></div>
+        <div class="flags-row" id="d-flags-row"></div>
+        <div class="divider"></div>
+        <h3 class="sub-heading">Role Description</h3>
+        <div class="job-description-html" id="d-description"></div>
+      </div>
+
+      <div class="drawer-subpanel" id="dpanel-tailor">
+        <div id="d-tailor-content"></div>
+      </div>
+
+      <div class="drawer-subpanel" id="dpanel-notes">
+        <h3>Application Notes</h3>
+        <p class="muted small">Stored persistently in SQLite for this role.</p>
+        <textarea id="d-notes-input" rows="10" placeholder="Referral contact, recruiter email, interview prep..."></textarea>
+        <div class="btn-row" style="margin-top: 10px;">
+          <button class="btn btn-primary" id="btn-save-notes">Save Notes</button>
+          <span class="muted small" id="d-notes-status"></span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Sticky Keyboard Triage Bar (Recognition over Recall) -->
+  <footer class="kbd-bar mono" id="kbd-bar">
+    <span><kbd>J</kbd>/<kbd>K</kbd> Navigate</span>
+    <span><kbd>Enter</kbd> Inspect</span>
+    <span><kbd>S</kbd> Save</span>
+    <span><kbd>X</kbd> Dismiss</span>
+    <span><kbd>A</kbd> Apply</span>
+    <span><kbd>Z</kbd> Undo</span>
+    <span><kbd>1</kbd>–<kbd>3</kbd> Pane Tabs</span>
+    <span><kbd>/</kbd> or <kbd>⌘K</kbd> Search</span>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
