@@ -31,6 +31,7 @@ import {
   scrapeAppleCareers,
   scrapeInternshala,
   scrapeInstahyre,
+  scrapeLinkedInGuest,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
 import { upsertJobsBatch, recordSourceHealth } from '../db.js';
@@ -187,6 +188,7 @@ export const DEFAULT_SOURCES = [
   { id: 'bigtech-apple', name: 'Apple Careers (India)', type: 'apple', tier: 1, config: { companyName: 'Apple', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
   { id: 'india-internshala', name: 'Internshala (CS Bengaluru & Remote)', type: 'internshala', tier: 2, config: { category: 'India Internships', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
   { id: 'india-instahyre', name: 'Instahyre (India Startups)', type: 'instahyre', tier: 2, config: { category: 'India Tech', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
+  { id: 'agg-linkedin-guest', name: 'LinkedIn Guest (Fresher BLR/India/Remote)', type: 'linkedin_guest', tier: 3, config: { category: 'Global & India', timeoutMs: 90000, weight: 3, pollIntervalMinutes: 360 } },
 ];
 
 const LARGE_BOARD_IDS = new Set([
@@ -261,6 +263,7 @@ const ADAPTER_MAP = {
   apple: scrapeAppleCareers,
   internshala: scrapeInternshala,
   instahyre: scrapeInstahyre,
+  linkedin_guest: scrapeLinkedInGuest,
   custom: scrapeCustomUrl,
 };
 

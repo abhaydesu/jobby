@@ -2,7 +2,7 @@
 // & Global Public Remote/Tech Aggregator APIs (Remotive, Arbeitnow, RemoteOK, The Muse, Himalayas, Jobicy, WWR RSS)
 
 import { fetchJson, fetchText, normalizeJobPayload } from './normalize.js';
-import { decodeHtmlEntities, stripHtmlToText } from '../nlp.js';
+import { decodeHtmlEntities, stripHtmlToText, extractExperience, classifyRoleCategory } from '../nlp.js';
 
 function aggOpts(source, fallbackMs = 20000) {
   return { timeoutMs: source?.timeoutMs || fallbackMs, db: source?.db || null };
@@ -796,4 +796,162 @@ export async function scrapeInstahyre(source) {
   }
   if (!anyOk && firstErr) throw firstErr;
   return out;
+}
+
+export function parseLinkedInGuestCards(html = '', source = {}, detailMap = new Map()) {
+  const blocks = String(html || '').split(/<li[\s>]/i).slice(1);
+  return blocks
+    .map((block) => {
+      const idMatch = /data-entity-urn=["']urn:li:jobPosting:(\d+)["']/i.exec(block);
+      const jobId = idMatch?.[1];
+      if (!jobId) return null;
+
+      const titleMatch = /<h3[^>]+class="[^"]*base-search-card__title[^"]*"[^>]*>([\s\S]*?)<\/h3>/i.exec(block);
+      const title = stripHtmlToText(titleMatch?.[1] || '');
+      const companyMatch = /<h4[^>]+class="[^"]*base-search-card__subtitle[^"]*"[^>]*>[\s\S]*?(?:<a[^>]*>([\s\S]*?)<\/a>|([\s\S]*?))<\/h4>/i.exec(block);
+      const company = stripHtmlToText(companyMatch?.[1] || companyMatch?.[2] || '') || 'LinkedIn Company';
+      const locMatch = /<span[^>]+class="[^"]*job-search-card__location[^"]*"[^>]*>([\s\S]*?)<\/span>/i.exec(block);
+      const location = stripHtmlToText(locMatch?.[1] || '') || 'Unspecified';
+      const linkMatch = /<a[^>]+class="[^"]*base-card__full-link[^"]*"[^>]+href=["']([^"']+)["']/i.exec(block);
+      const url = decodeHtmlEntities(linkMatch?.[1] || `https://www.linkedin.com/jobs/view/${jobId}/`);
+      const timeMatch = /<time[^>]+datetime=["']([^"']+)["']/i.exec(block);
+
+      if (!title) return null;
+      const detail = detailMap.get(jobId) || {};
+      const applyUrl = detail.offsiteUrl || url;
+      return normalizeJobPayload({
+        sourceId: source.id || 'agg-linkedin-guest',
+        sourceType: 'linkedin_guest',
+        externalId: jobId,
+        title,
+        company,
+        location,
+        explicitRemote: /\bremote\b/i.test(location),
+        descriptionHtml: detail.html || '',
+        applyUrl,
+        companyUrl: url,
+        postedAt: timeMatch?.[1] || null,
+      });
+    })
+    .filter(Boolean);
+}
+
+function extractLinkedInDetailParts(detailHtml = '') {
+  const markupMatch = /<div[^>]+class="[^"]*show-more-less-html__markup[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(detailHtml);
+  const offsiteMatch = /href=["'](https?:\/\/(?!(?:[a-z]+\.)?linkedin\.com)[^"']+)["'][^>]*data-tracking-control-name=["'][^"']*apply/i.exec(detailHtml)
+    || /<code[^>]+id=["']applyUrl["'][^>]*><!--\s*"([^"]+)"\s*--><\/code>/i.exec(detailHtml);
+  return {
+    html: markupMatch?.[1] || '',
+    offsiteUrl: offsiteMatch ? decodeHtmlEntities(offsiteMatch[1]) : '',
+  };
+}
+
+export async function scrapeLinkedInGuest(source, options = {}) {
+  const db = source?.db || options.db || null;
+  const now = Date.now();
+  if (db) {
+    const backoffRow = db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get();
+    const backoffUntil = Number(backoffRow?.value || 0);
+    if (backoffUntil > now) {
+      return [];
+    }
+    const runsRow = db.prepare("SELECT value FROM settings WHERE key = 'linkedin_run_timestamps'").get();
+    let recentRuns = [];
+    try {
+      recentRuns = JSON.parse(runsRow?.value || '[]').filter((ts) => Number(ts) > now - 24 * 3600 * 1000);
+    } catch {
+      recentRuns = [];
+    }
+    if (recentRuns.length >= 4) {
+      return [];
+    }
+    recentRuns.push(now);
+    db.prepare(
+      "INSERT INTO settings (key, value) VALUES ('linkedin_run_timestamps', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).run(JSON.stringify(recentRuns));
+  }
+
+  const keywords = options.keywords || ['SDE intern', 'software engineer new grad', 'ML intern', 'data intern', 'devops intern'];
+  const locations = options.locations || ['Bengaluru', 'India', 'Remote'];
+  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const minGapMs = options.delayMs ?? 4000;
+  const rawHtmlBlocks = [];
+  const candidateMeta = [];
+  const seenIds = new Set();
+
+  for (const kw of keywords) {
+    for (const loc of locations) {
+      const url = `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=${encodeURIComponent(kw)}&location=${encodeURIComponent(loc)}&f_E=1,2&f_TPR=r86400&start=0`;
+      try {
+        const html = await fetchText(url, {
+          timeoutMs: 15000,
+          retries: 0,
+          minGapMs,
+          fetchImpl: fetchFn,
+          sleepImpl: options.sleepImpl,
+          db: null,
+        });
+        rawHtmlBlocks.push(html);
+        for (const card of parseLinkedInGuestCards(html, source)) {
+          if (seenIds.has(card.external_id)) continue;
+          seenIds.add(card.external_id);
+          const exp = extractExperience(card.description_text, card.title);
+          const cat = classifyRoleCategory(card.title, card.department, card.description_text);
+          if ((exp.seniority === 'intern' || exp.seniority === 'junior') && cat !== 'non_tech') {
+            candidateMeta.push(card.external_id);
+          }
+        }
+      } catch (err) {
+        if (/HTTP 429\b/.test(err?.message || '')) {
+          if (db) {
+            db.prepare(
+              "INSERT INTO settings (key, value) VALUES ('linkedin_backoff_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).run(String(Date.now() + 6 * 3600 * 1000));
+          }
+          break;
+        }
+      }
+    }
+    if (db) {
+      const backoffAfter = Number(db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get()?.value || 0);
+      if (backoffAfter > Date.now()) break;
+    }
+  }
+
+  const detailMap = new Map();
+  const maxDetails = options.maxDetails ?? 10;
+  for (const id of candidateMeta.slice(0, maxDetails)) {
+    if (db) {
+      const backoffNow = Number(db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get()?.value || 0);
+      if (backoffNow > Date.now()) break;
+    }
+    try {
+      const detailHtml = await fetchText(`https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/${encodeURIComponent(id)}`, {
+        timeoutMs: 15000,
+        retries: 0,
+        minGapMs,
+        fetchImpl: fetchFn,
+        sleepImpl: options.sleepImpl,
+        db: null,
+      });
+      detailMap.set(id, extractLinkedInDetailParts(detailHtml));
+    } catch (err) {
+      if (/HTTP 429\b/.test(err?.message || '')) {
+        if (db) {
+          db.prepare(
+            "INSERT INTO settings (key, value) VALUES ('linkedin_backoff_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+          ).run(String(Date.now() + 6 * 3600 * 1000));
+        }
+        break;
+      }
+    }
+  }
+
+  const combinedHtml = rawHtmlBlocks.join('\n');
+  const allParsed = parseLinkedInGuestCards(combinedHtml, source, detailMap);
+  const uniq = new Map();
+  for (const job of allParsed) {
+    if (!uniq.has(job.external_id)) uniq.set(job.external_id, job);
+  }
+  return Array.from(uniq.values());
 }

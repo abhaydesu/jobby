@@ -26,6 +26,8 @@ import {
   parseAppleCareersHtml,
   parseInternshalaHtml,
   parseInstahyreJson,
+  parseLinkedInGuestCards,
+  scrapeLinkedInGuest,
 } from '../src/scrapers/aggregators.js';
 import { createApp } from '../src/server.js';
 
@@ -641,4 +643,40 @@ test('Indian boards parsers normalize real Internshala HTML and Instahyre JSON f
   assert.equal(ihJobs[0].source_type, 'instahyre');
   assert.equal(ihJobs[0].company, 'D. E. Shaw');
   assert.ok(ihJobs[0].skills.includes('Python'));
+});
+
+test('LinkedIn guest parser & rate/429 backoff caps work properly', async () => {
+  const liHtml = fs.readFileSync(new URL('./fixtures/linkedin-guest.html', import.meta.url), 'utf8');
+  const jobs = parseLinkedInGuestCards(liHtml, { id: 'agg-linkedin-guest' });
+  assert.equal(jobs.length, 3);
+  assert.equal(jobs[0].source_type, 'linkedin_guest');
+  assert.equal(jobs[0].company, 'Honeywell Technologies');
+  assert.equal(jobs[0].seniority, 'intern');
+  assert.ok(jobs[0].location.includes('Bengaluru'));
+
+  const db = initDb(':memory:');
+  let reqCount = 0;
+  const mock429Fetch = async () => {
+    reqCount += 1;
+    return new Response('Too many requests', { status: 429 });
+  };
+  await scrapeLinkedInGuest(
+    { id: 'agg-linkedin-guest', db },
+    { keywords: ['SDE intern', 'ML intern'], locations: ['Bengaluru'], fetchImpl: mock429Fetch, delayMs: 0, sleepImpl: async () => {} }
+  );
+  assert.equal(reqCount, 1);
+  const backoffUntil = Number(db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get()?.value || 0);
+  assert.ok(backoffUntil > Date.now() + 5 * 3600 * 1000);
+
+  db.prepare("DELETE FROM settings WHERE key = 'linkedin_backoff_until'").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('linkedin_run_timestamps', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(JSON.stringify([Date.now(), Date.now() - 1000, Date.now() - 2000, Date.now() - 3000]));
+  let blockedReqs = 0;
+  const capped = await scrapeLinkedInGuest(
+    { id: 'agg-linkedin-guest', db },
+    { keywords: ['SDE intern'], locations: ['Bengaluru'], fetchImpl: async () => { blockedReqs += 1; return new Response(''); }, delayMs: 0 }
+  );
+  assert.equal(capped.length, 0);
+  assert.equal(blockedReqs, 0);
+  db.close();
 });
