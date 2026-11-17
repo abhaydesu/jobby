@@ -18,7 +18,7 @@ import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '.
 import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth } from '../src/db.js';
 import { normalizeJobPayload, fetchWithHardening } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
-import { parseWorkdayListings } from '../src/scrapers/ats.js';
+import { parseWorkdayListings, parseOracleHcm, parsePersonioXml, parseTeamtailorRss } from '../src/scrapers/ats.js';
 import { createApp } from '../src/server.js';
 
 test('NLP: HTML stripping and XSS sanitization', () => {
@@ -544,4 +544,47 @@ test('Workday parser normalizes real CXS search + detail fixture with Bengaluru 
   assert.ok(parsed[0].apply_url.includes('WalmartExternal'));
   assert.ok(parsed[0].description_text.includes('Bengaluru'));
   assert.equal(classifyLocationTier(parsed[0].location, parsed[0].work_mode, parsed[0].description_text), 'bangalore');
+});
+
+test('Oracle HCM, Personio XML, Teamtailor RSS parsers & extended ATS fingerprinter', () => {
+  const oracleFx = JSON.parse(fs.readFileSync(new URL('./fixtures/oracle-hcm.json', import.meta.url), 'utf8'));
+  const oracleJobs = parseOracleHcm(oracleFx, {
+    id: 'oracle-jpmc',
+    name: 'JPMorgan Chase',
+    config: { host: 'jpmc.fa.oraclecloud.com', site: 'CX_1001', companyName: 'JPMorgan Chase' },
+  });
+  assert.equal(oracleJobs.length, 3);
+  assert.equal(oracleJobs[0].source_type, 'oracle_hcm');
+  assert.ok(oracleJobs[0].apply_url.includes('jpmc.fa.oraclecloud.com'));
+
+  const personioXml = fs.readFileSync(new URL('./fixtures/personio.xml', import.meta.url), 'utf8');
+  const personioJobs = parsePersonioXml(personioXml, {
+    id: 'personio-main',
+    name: 'Personio',
+    config: { slug: 'personio', companyName: 'Personio' },
+  });
+  assert.equal(personioJobs.length, 2);
+  assert.equal(personioJobs[0].source_type, 'personio');
+  assert.equal(personioJobs[0].location, 'Berlin');
+
+  const ttXml = fs.readFileSync(new URL('./fixtures/teamtailor.xml', import.meta.url), 'utf8');
+  const ttJobs = parseTeamtailorRss(ttXml, {
+    id: 'teamtailor-main',
+    name: 'Teamtailor',
+    config: { host: 'career.teamtailor.com', companyName: 'Teamtailor' },
+  });
+  assert.equal(ttJobs.length, 3);
+  assert.equal(ttJobs[0].source_type, 'teamtailor');
+  assert.equal(ttJobs[0].work_mode, 'hybrid');
+
+  assert.equal(detectAtsFromText('https://walmart.wd504.myworkdayjobs.com/WalmartExternal')?.type, 'workday');
+  assert.equal(detectAtsFromText('https://zepto.keka.com/careers/jobs')?.type, 'keka');
+  assert.equal(detectAtsFromText('https://company.darwinbox.in/ms/candidate/careers')?.type, 'darwinbox');
+  assert.equal(detectAtsFromText('https://careers.qualcomm.com/careers?domain=qualcomm.com')?.type, 'eightfold');
+  assert.equal(detectAtsFromText('https://acmecorp.jobs.personio.de/xml')?.type, 'personio');
+  assert.equal(detectAtsFromText('https://acme.teamtailor.com/jobs')?.type, 'teamtailor');
+  assert.equal(detectAtsFromText('https://acme.freshteam.com/jobs')?.type, 'freshteam');
+  assert.equal(detectAtsFromText('https://acme.bamboohr.com/careers')?.type, 'bamboohr');
+  assert.equal(detectAtsFromText('https://acme.breezy.hr/p/123')?.type, 'breezy');
+  assert.equal(detectAtsFromText('https://careers-apac-atlassian.icims.com/jobs/123')?.type, 'icims');
 });

@@ -45,13 +45,72 @@ const ATS_PATTERNS = [
     type: 'pinpoint',
     rx: /https?:\/\/([a-zA-Z0-9_-]+)\.pinpointhq\.com/i,
   },
+  {
+    type: 'workday',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+\.wd\d+\.myworkdayjobs\.com\/(?:[a-z]{2}(?:-[A-Z]{2})?\/)?[a-zA-Z0-9_-]+)/i,
+  },
+  {
+    type: 'oracle_hcm',
+    rx: /https?:\/\/([a-zA-Z0-9_.-]+\.(?:oraclecloud\.com|dell\.com))\/hcmUI\/CandidateExperience\/[a-z-]+\/sites\/([a-zA-Z0-9_-]+)/i,
+  },
+  {
+    type: 'personio',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.jobs\.personio\.(?:de|com)/i,
+  },
+  {
+    type: 'teamtailor',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+\.teamtailor\.com)\/jobs/i,
+  },
+  {
+    type: 'keka',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.keka\.com\/careers/i,
+  },
+  {
+    type: 'darwinbox',
+    rx: /https?:\/\/([a-zA-Z0-9_.-]+)\.darwinbox\.in/i,
+  },
+  {
+    type: 'zohorecruit',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.zohorecruit\.(?:com|in)/i,
+  },
+  {
+    type: 'freshteam',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.freshteam\.com\/jobs/i,
+  },
+  {
+    type: 'bamboohr',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.bamboohr\.com\/(?:careers|jobs)/i,
+  },
+  {
+    type: 'breezy',
+    rx: /https?:\/\/([a-zA-Z0-9_-]+)\.breezy\.hr/i,
+  },
+  {
+    type: 'eightfold',
+    rx: /https?:\/\/([a-zA-Z0-9_.-]+)\/careers\?.*domain=([a-zA-Z0-9_.-]+)|https?:\/\/([a-zA-Z0-9_.-]+\.eightfold\.ai)\/careers/i,
+  },
+  {
+    type: 'phenom',
+    rx: /phenompeople\.com|\/phx\/|phenomtrack/i,
+  },
+  {
+    type: 'successfactors',
+    rx: /https?:\/\/jobs\.(?:sap|[a-z0-9-]+)\.com\/.*careersection|successfactors\.com\/careers/i,
+  },
+  {
+    type: 'icims',
+    rx: /https?:\/\/careers-[a-z0-9-]+\.icims\.com\/jobs/i,
+  },
 ];
 
 export function detectAtsFromText(text = '') {
   for (const pat of ATS_PATTERNS) {
     const m = pat.rx.exec(text);
-    if (m && m[1] && !['embed', 'api', 'v1', 'v2', 'assets', 'static'].includes(m[1].toLowerCase())) {
-      return { type: pat.type, slug: m[1].replace(/\/$/, '') };
+    if (m) {
+      const candidateSlug = (m[2] && pat.type === 'oracle_hcm' ? `${m[1]}::${m[2]}` : (m[1] || m[2] || m[3] || m[0])).replace(/\/$/, '');
+      if (candidateSlug && !['embed', 'api', 'v1', 'v2', 'assets', 'static'].includes(candidateSlug.toLowerCase())) {
+        return { type: pat.type, slug: candidateSlug };
+      }
     }
   }
   return null;

@@ -10,6 +10,9 @@ import {
   scrapeRippling,
   scrapePinpoint,
   scrapeWorkday,
+  scrapeOracleHcm,
+  scrapePersonio,
+  scrapeTeamtailor,
 } from './ats.js';
 import {
   scrapeRemotive,
@@ -163,6 +166,13 @@ export const DEFAULT_SOURCES = [
   { id: 'wd-hp', name: 'HP', type: 'workday', tier: 1, config: { tenant: 'hp', wdNum: 5, site: 'ExternalCareerSite', companyName: 'HP', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
   { id: 'wd-mastercard', name: 'Mastercard', type: 'workday', tier: 1, config: { tenant: 'mastercard', wdNum: 1, site: 'CorporateCareers', companyName: 'Mastercard', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
   { id: 'wd-paypal', name: 'PayPal', type: 'workday', tier: 1, config: { tenant: 'paypal', wdNum: 1, site: 'jobs', companyName: 'PayPal', timeoutMs: 35000, weight: 2, pollIntervalMinutes: 45 } },
+
+  { id: 'oracle-jpmc', name: 'JPMorgan Chase', type: 'oracle_hcm', tier: 1, config: { host: 'jpmc.fa.oraclecloud.com', site: 'CX_1001', companyName: 'JPMorgan Chase', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'oracle-dell', name: 'Dell Technologies', type: 'oracle_hcm', tier: 1, config: { host: 'enterpriseplatform.dell.com', site: 'careers', companyName: 'Dell Technologies', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
+  { id: 'oracle-corp', name: 'Oracle', type: 'oracle_hcm', tier: 1, config: { host: 'eeho.fa.us2.oraclecloud.com', site: 'CX_45001', companyName: 'Oracle', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
+  { id: 'personio-main', name: 'Personio', type: 'personio', tier: 1, config: { slug: 'personio', companyName: 'Personio', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
+  { id: 'teamtailor-main', name: 'Teamtailor', type: 'teamtailor', tier: 1, config: { host: 'career.teamtailor.com', companyName: 'Teamtailor', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
+  { id: 'sr-bosch-india', name: 'Bosch India', type: 'smartrecruiters', tier: 1, config: { slug: 'BoschGroup', query: 'Bengaluru', companyName: 'Bosch', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 45 } },
 ];
 
 const LARGE_BOARD_IDS = new Set([
@@ -218,6 +228,9 @@ const ADAPTER_MAP = {
   rippling: scrapeRippling,
   pinpoint: scrapePinpoint,
   workday: scrapeWorkday,
+  oracle_hcm: scrapeOracleHcm,
+  personio: scrapePersonio,
+  teamtailor: scrapeTeamtailor,
   remotive: scrapeRemotive,
   arbeitnow: scrapeArbeitnow,
   remoteok: scrapeRemoteOK,

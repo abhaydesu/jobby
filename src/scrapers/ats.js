@@ -1,7 +1,8 @@
 // Tier 1: Direct ATS Public JSON API Adapters
 // Greenhouse, Ashby HQ, Lever, SmartRecruiters, Workable, Recruitee
 
-import { fetchJson, normalizeJobPayload } from './normalize.js';
+import { fetchJson, fetchText, normalizeJobPayload } from './normalize.js';
+import { decodeHtmlEntities } from '../nlp.js';
 
 function reqOpts(source, fallbackMs = 20000) {
   return { timeoutMs: source?.timeoutMs || fallbackMs, db: source?.db || null };
@@ -135,9 +136,10 @@ export async function scrapeLever(source) {
 }
 
 export async function scrapeSmartRecruiters(source) {
-  const { slug, companyName } = source.config;
+  const { slug, companyName, query = '' } = source.config;
   const opts = reqOpts(source);
-  const listUrl = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=60`;
+  const queryPart = query ? `&q=${encodeURIComponent(query)}` : '';
+  const listUrl = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=60${queryPart}`;
   const data = await fetchJson(listUrl, opts);
   const items = Array.isArray(data?.content) ? data.content : [];
 
@@ -460,4 +462,169 @@ export async function scrapeWorkday(source) {
   });
 
   return parseWorkdayListings({ jobPostings: allItems }, detailMap, source);
+}
+
+function readXmlTag(block, tag) {
+  const rx = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i');
+  const m = rx.exec(block);
+  if (!m) return '';
+  let val = m[1].trim();
+  const cdata = /<!\[CDATA\[([\s\S]*?)\]\]>/i.exec(val);
+  if (cdata) val = cdata[1].trim();
+  return decodeHtmlEntities(val);
+}
+
+export function parseOracleHcm(data, source = {}) {
+  const { host = 'jpmc.fa.oraclecloud.com', site = 'CX_1001', companyName } = source.config || {};
+  const groups = Array.isArray(data?.items) ? data.items : [];
+  const items = [];
+  for (const grp of groups) {
+    if (Array.isArray(grp?.requisitionList)) {
+      items.push(...grp.requisitionList);
+    }
+  }
+
+  return items
+    .filter((req) => req && req.Title && req.Id)
+    .map((req) => {
+      const secLocs = Array.isArray(req.secondaryLocations)
+        ? req.secondaryLocations.map((l) => l.Name || l.CountryCode).filter(Boolean)
+        : [];
+      const loc = [req.PrimaryLocation, ...secLocs.slice(0, 2)].filter(Boolean).join(', ') || 'Unspecified';
+      const descParts = [
+        req.ShortDescriptionStr,
+        req.ExternalResponsibilitiesStr,
+        req.ExternalQualificationsStr,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      const applyUrl = `https://${host}/hcmUI/CandidateExperience/en/sites/${encodeURIComponent(site)}/job/${encodeURIComponent(req.Id)}`;
+
+      return normalizeJobPayload({
+        sourceId: source.id || 'oracle-hcm',
+        sourceType: 'oracle_hcm',
+        externalId: req.Id,
+        title: req.Title,
+        company: companyName || source.name || 'Oracle HCM Employer',
+        department: req.JobFamily || req.JobFunction || req.Department || '',
+        location: loc,
+        explicitRemote: /remote/i.test(`${req.WorkplaceType || ''} ${loc}`),
+        explicitMode: /hybrid/i.test(String(req.WorkplaceType || '')) ? 'hybrid' : null,
+        employmentType: req.ContractType || req.WorkerType || 'Full-Time',
+        descriptionHtml: descParts,
+        applyUrl,
+        companyUrl: `https://${host}/hcmUI/CandidateExperience/en/sites/${encodeURIComponent(site)}`,
+        postedAt: req.PostedDate || null,
+      });
+    });
+}
+
+export async function scrapeOracleHcm(source) {
+  const { host, site } = source.config;
+  const opts = reqOpts(source, 30000);
+  const keywords = ['intern', 'graduate', 'software', 'engineer'];
+  const byId = new Map();
+
+  for (const kw of keywords) {
+    const url = `https://${host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=${encodeURIComponent(site)},keyword=${encodeURIComponent(kw)},limit=25`;
+    const data = await fetchJson(url, opts).catch(() => null);
+    for (const grp of data?.items || []) {
+      for (const req of grp?.requisitionList || []) {
+        if (req?.Id && !byId.has(req.Id)) {
+          byId.set(req.Id, req);
+        }
+      }
+    }
+  }
+
+  return parseOracleHcm({ items: [{ requisitionList: Array.from(byId.values()) }] }, source);
+}
+
+export function parsePersonioXml(xml = '', source = {}) {
+  const { slug = 'personio', companyName } = source.config || {};
+  const blocks = String(xml || '').match(/<position>[\s\S]*?<\/position>/gi) || [];
+
+  return blocks
+    .map((block) => {
+      const id = readXmlTag(block, 'id');
+      const title = readXmlTag(block, 'name');
+      const office = readXmlTag(block, 'office');
+      const department = readXmlTag(block, 'department');
+      const empType = readXmlTag(block, 'employmentType') || 'Full-Time';
+      const createdAt = readXmlTag(block, 'createdAt') || null;
+      const valMatches = [...block.matchAll(/<jobDescription>([\s\S]*?)<\/jobDescription>/gi)];
+      const descHtml = valMatches
+        .map((m) => {
+          const secName = readXmlTag(m[1], 'name');
+          const secVal = readXmlTag(m[1], 'value');
+          return secName ? `<h3>${secName}</h3>${secVal}` : secVal;
+        })
+        .join('\n');
+
+      if (!title || !id) return null;
+      return normalizeJobPayload({
+        sourceId: source.id || `personio-${slug}`,
+        sourceType: 'personio',
+        externalId: id,
+        title,
+        company: companyName || source.name || slug,
+        department,
+        location: office || 'Europe',
+        employmentType: empType,
+        descriptionHtml: descHtml,
+        applyUrl: `https://${slug}.jobs.personio.de/job/${id}`,
+        companyUrl: `https://${slug}.jobs.personio.de/`,
+        postedAt: createdAt,
+      });
+    })
+    .filter(Boolean);
+}
+
+export async function scrapePersonio(source) {
+  const { slug } = source.config;
+  const xml = await fetchText(`https://${encodeURIComponent(slug)}.jobs.personio.de/xml?language=en`, reqOpts(source));
+  return parsePersonioXml(xml, source);
+}
+
+export function parseTeamtailorRss(xml = '', source = {}) {
+  const { host = 'career.teamtailor.com', companyName } = source.config || {};
+  const blocks = String(xml || '').match(/<item>[\s\S]*?<\/item>/gi) || [];
+
+  return blocks
+    .map((block) => {
+      const title = readXmlTag(block, 'title');
+      const link = readXmlTag(block, 'link');
+      const guid = readXmlTag(block, 'guid') || link;
+      const description = readXmlTag(block, 'description');
+      const pubDate = readXmlTag(block, 'pubDate') || null;
+      const remoteStatus = readXmlTag(block, 'remoteStatus').toLowerCase();
+      const dept = readXmlTag(block, 'tt:department');
+      const city = readXmlTag(block, 'tt:city') || readXmlTag(block, 'tt:name');
+      const country = readXmlTag(block, 'tt:country');
+      const location = [city, country].filter(Boolean).join(', ') || (remoteStatus === 'fully' ? 'Remote' : 'Unspecified');
+
+      if (!title || !link) return null;
+      return normalizeJobPayload({
+        sourceId: source.id || 'teamtailor',
+        sourceType: 'teamtailor',
+        externalId: guid,
+        title,
+        company: companyName || source.name || 'Teamtailor',
+        department: dept,
+        location,
+        explicitRemote: remoteStatus === 'fully',
+        explicitMode: remoteStatus === 'hybrid' ? 'hybrid' : remoteStatus === 'fully' ? 'remote' : null,
+        descriptionHtml: description,
+        applyUrl: link,
+        companyUrl: `https://${host}/`,
+        postedAt: pubDate,
+      });
+    })
+    .filter(Boolean);
+}
+
+export async function scrapeTeamtailor(source) {
+  const { host = 'career.teamtailor.com' } = source.config;
+  const xml = await fetchText(`https://${host}/jobs.rss`, reqOpts(source));
+  return parseTeamtailorRss(xml, source);
 }
