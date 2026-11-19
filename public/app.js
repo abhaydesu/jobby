@@ -107,8 +107,8 @@ function markJobSeen(id) {
 
 async function api(url, opts = {}) {
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -211,9 +211,26 @@ function switchTab(tabName) {
   if (tabName === 'research') loadResearch();
 }
 
-async function loadJobs() {
+let jobsAbortCtrl = null;
+let jobsReqSeq = 0;
+let prefetchTimer = null;
+let prefetchAbortCtrl = null;
+const pageCache = new Map();
+const PAGE_CACHE_TTL_MS = 30 * 1000;
+
+function invalidatePageCache() {
+  pageCache.clear();
+  clearTimeout(prefetchTimer);
+  prefetchTimer = null;
+  if (prefetchAbortCtrl) {
+    prefetchAbortCtrl.abort();
+    prefetchAbortCtrl = null;
+  }
+}
+
+function buildJobsQueryParams(offsetOverride = state.filters.offset, includeStats = true) {
   const f = state.filters;
-  const qs = new URLSearchParams({
+  return new URLSearchParams({
     q: f.q,
     minScore: String(f.minScore),
     workMode: f.workMode,
@@ -232,24 +249,160 @@ async function loadJobs() {
     skills: f.skills.join(','),
     sortBy: f.sortBy,
     limit: String(f.limit),
-    offset: String(f.offset),
+    offset: String(offsetOverride),
+    includeStats: includeStats ? '1' : '0',
   });
+}
 
+function getFilterCacheKey() {
+  const qs = buildJobsQueryParams(0, false);
+  qs.delete('offset');
+  qs.delete('includeStats');
+  return qs.toString();
+}
+
+function cachePage(key, data) {
+  if (pageCache.size >= 24) {
+    const oldestKey = pageCache.keys().next().value;
+    if (oldestKey !== undefined) pageCache.delete(oldestKey);
+  }
+  pageCache.set(key, {
+    jobs: data.jobs || [],
+    total: data.total || 0,
+    ts: Date.now(),
+  });
+}
+
+function scrollToFeedTop() {
+  const anchor = $('.feed-bar') || $('#jobs-list');
+  if (!anchor) return;
+  const top = Math.max(0, window.scrollY + anchor.getBoundingClientRect().top - 72);
+  window.scrollTo({ top, behavior: 'instant' });
+}
+
+function scheduleNextPagePrefetch() {
+  clearTimeout(prefetchTimer);
+  if (prefetchAbortCtrl) {
+    prefetchAbortCtrl.abort();
+    prefetchAbortCtrl = null;
+  }
+  const f = state.filters;
+  const nextOffset = f.offset + f.limit;
+  if (nextOffset >= state.total) return;
+  const key = `${getFilterCacheKey()}::${nextOffset}`;
+  const cached = pageCache.get(key);
+  if (cached && Date.now() - cached.ts < PAGE_CACHE_TTL_MS) return;
+
+  prefetchTimer = setTimeout(async () => {
+    const curFilterKey = getFilterCacheKey();
+    const targetOffset = state.filters.offset + state.filters.limit;
+    if (targetOffset !== nextOffset || `${curFilterKey}::${nextOffset}` !== key) return;
+    prefetchAbortCtrl = new AbortController();
+    try {
+      const qs = buildJobsQueryParams(nextOffset, false);
+      const data = await api(`/api/jobs?${qs.toString()}`, { signal: prefetchAbortCtrl.signal });
+      if (getFilterCacheKey() === curFilterKey) {
+        cachePage(key, data);
+      }
+    } catch {
+    } finally {
+      prefetchAbortCtrl = null;
+    }
+  }, 80);
+}
+
+async function loadJobs({ paginate = false, scrollToTop = false } = {}) {
+  const f = state.filters;
   syncQuickIntentAndAdvBadge();
   renderActiveFilterChips();
 
-  const data = await api(`/api/jobs?${qs.toString()}`);
-  state.jobs = data.jobs || [];
-  state.total = data.total || 0;
-  state.stats = data.stats || {};
-  state.facets = data.facets || {};
-
-  if (state.focusedIndex >= state.jobs.length) {
-    state.focusedIndex = Math.max(0, state.jobs.length - 1);
+  clearTimeout(prefetchTimer);
+  prefetchTimer = null;
+  if (prefetchAbortCtrl) {
+    prefetchAbortCtrl.abort();
+    prefetchAbortCtrl = null;
   }
 
-  renderStatsAndFacets();
-  renderJobsList();
+  if (!paginate) {
+    pageCache.clear();
+  }
+
+  const filterKey = getFilterCacheKey();
+  const cacheKey = `${filterKey}::${f.offset}`;
+  if (paginate) {
+    const cached = pageCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < PAGE_CACHE_TTL_MS) {
+      if (jobsAbortCtrl) jobsAbortCtrl.abort();
+      jobsReqSeq += 1;
+      state.jobs = cached.jobs;
+      state.total = cached.total;
+      state.focusedIndex = 0;
+      $('#jobs-list')?.classList.remove('is-loading');
+      renderJobsList();
+      if (scrollToTop) scrollToFeedTop();
+      scheduleNextPagePrefetch();
+      return;
+    }
+  }
+
+  if (jobsAbortCtrl) jobsAbortCtrl.abort();
+  jobsAbortCtrl = new AbortController();
+  const mySeq = ++jobsReqSeq;
+
+  const listEl = $('#jobs-list');
+  const prevBtn = $('#btn-prev-page');
+  const nextBtn = $('#btn-next-page');
+  if (paginate && listEl) listEl.classList.add('is-loading');
+  if (paginate && prevBtn) prevBtn.disabled = true;
+  if (paginate && nextBtn) nextBtn.disabled = true;
+
+  const needStats = !paginate || !state.stats || state.stats.totalActive === undefined;
+  const qs = buildJobsQueryParams(f.offset, needStats);
+
+  try {
+    const data = await api(`/api/jobs?${qs.toString()}`, { signal: jobsAbortCtrl.signal });
+    if (mySeq !== jobsReqSeq) return;
+
+    cachePage(cacheKey, data);
+
+    if ((data.jobs || []).length === 0 && (data.total || 0) > 0 && f.offset > 0) {
+      f.offset = Math.max(0, Math.floor((data.total - 1) / f.limit) * f.limit);
+      return loadJobs({ paginate: false, scrollToTop });
+    }
+
+    state.jobs = data.jobs || [];
+    state.total = data.total || 0;
+    if (data.stats) state.stats = data.stats;
+    if (data.facets) state.facets = data.facets;
+
+    if (paginate) {
+      state.focusedIndex = 0;
+    } else if (state.focusedIndex >= state.jobs.length) {
+      state.focusedIndex = Math.max(0, state.jobs.length - 1);
+    }
+
+    if (data.stats) renderStatsAndFacets();
+    if (listEl) listEl.classList.remove('is-loading');
+    renderJobsList();
+    if (scrollToTop) scrollToFeedTop();
+    scheduleNextPagePrefetch();
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    if (mySeq === jobsReqSeq) {
+      if (listEl) listEl.classList.remove('is-loading');
+      renderJobsList();
+      toast(`Failed to load jobs: ${err.message}`, 'error');
+    }
+  }
+}
+
+function goToPage(nextOffset) {
+  const f = state.filters;
+  const maxOffset = Math.max(0, Math.floor(Math.max(0, state.total - 1) / f.limit) * f.limit);
+  const target = Math.min(maxOffset, Math.max(0, nextOffset));
+  if (target === f.offset) return;
+  f.offset = target;
+  loadJobs({ paginate: true, scrollToTop: true });
 }
 
 function syncQuickIntentAndAdvBadge() {
@@ -652,6 +805,7 @@ async function optimisticToggleSave(jobId) {
     method: 'PATCH',
     body: JSON.stringify({ status: nextStatus }),
   });
+  invalidatePageCache();
 
   if (state.tab === 'fresh' && state.fresh.untriagedOnly) {
     loadFreshJobs();
@@ -665,6 +819,7 @@ async function optimisticToggleSave(jobId) {
         method: 'PATCH',
         body: JSON.stringify({ status: prevStatus }),
       });
+      invalidatePageCache();
       loadJobs();
       if (state.tab === 'fresh') loadFreshJobs();
     }
@@ -681,6 +836,7 @@ async function optimisticDismissJob(jobId) {
     method: 'PATCH',
     body: JSON.stringify({ status: 'dismissed' }),
   });
+  invalidatePageCache();
 
   if (freshIdx >= 0) {
     state.fresh.jobs.splice(freshIdx, 1);
@@ -714,6 +870,7 @@ async function optimisticDismissJob(jobId) {
         method: 'PATCH',
         body: JSON.stringify({ status: prevStatus }),
       });
+      invalidatePageCache();
       loadJobs();
       if (state.tab === 'fresh') loadFreshJobs();
     }
@@ -1479,6 +1636,7 @@ async function saveProfile() {
   });
   populateProfileForm(data.profile);
   toast('Profile saved & re-scored');
+  invalidatePageCache();
   loadJobs();
 }
 
@@ -1676,6 +1834,7 @@ function handleSseEvent(evt) {
     dot.className = 'status-led';
     label.textContent = 'Synced';
     toast(`Scrape finished: ${evt.data.newJobs} new, ${evt.data.updatedJobs} updated`);
+    invalidatePageCache();
     loadJobs();
     refreshSkillCloud();
     if (state.tab === 'fresh') loadFreshJobs();
@@ -1686,6 +1845,7 @@ function handleSseEvent(evt) {
     if (evt.newCount > 0) {
       toast(`+${evt.newCount} new job${evt.newCount === 1 ? '' : 's'} added — check Fresh Drops`);
     }
+    invalidatePageCache();
     loadJobs();
     if (state.tab === 'fresh') loadFreshJobs();
   }
@@ -1945,14 +2105,10 @@ function bindEvents() {
   $('#btn-reset-filters').addEventListener('click', resetFilters);
 
   $('#btn-prev-page').addEventListener('click', () => {
-    state.filters.offset = Math.max(0, state.filters.offset - state.filters.limit);
-    loadJobs();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    goToPage(state.filters.offset - state.filters.limit);
   });
   $('#btn-next-page').addEventListener('click', () => {
-    state.filters.offset += state.filters.limit;
-    loadJobs();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    goToPage(state.filters.offset + state.filters.limit);
   });
 
   $('#btn-close-drawer').addEventListener('click', closeDrawer);
@@ -1977,6 +2133,7 @@ function bindEvents() {
       method: 'PATCH',
       body: JSON.stringify({ status: e.target.value }),
     });
+    invalidatePageCache();
     toast(`Status: ${e.target.value}`);
     loadJobs();
     if (state.tab === 'crm') loadCrmBoard();

@@ -10,6 +10,17 @@ import { canonicalizeApplyUrl } from './scrapers/normalize.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'jobby.db');
 
+const BLR_COND_SQL = "(location LIKE '%Bangalore%' OR location LIKE '%Bengaluru%' OR location LIKE '%BLR%')";
+const REMOTE_COND_SQL = "(work_mode = 'remote' OR location LIKE '%Remote%' OR location LIKE '%Worldwide%' OR location LIKE '%Anywhere%')";
+const INDIA_GUARD_SQL = "(location NOT LIKE '%Indiana%' AND location NOT LIKE '%Indianapolis%')";
+const INDIA_COND_SQL = `((location LIKE '%India%' AND ${INDIA_GUARD_SQL}) OR location LIKE '%Hyderabad%' OR location LIKE '%Pune%' OR location LIKE '%Mumbai%' OR location LIKE '%Gurgaon%' OR location LIKE '%Gurugram%' OR location LIKE '%Noida%' OR location LIKE '%Chennai%' OR location LIKE '%Delhi%' OR location LIKE '%Kolkata%')`;
+const PRIORITY_ORDER_SQL = `CASE WHEN ${BLR_COND_SQL} THEN 1 WHEN ${REMOTE_COND_SQL} THEN 2 WHEN ${INDIA_COND_SQL} THEN 3 ELSE 4 END`;
+const ROLE_CATEGORY_SQL = "COALESCE(json_extract(match_breakdown, '$.roleCategory'), 'tech')";
+
+function aliasJobsSql(expr) {
+  return expr.replace(/\b(location|work_mode|match_breakdown)\b/g, 'j.$1');
+}
+
 function safeJsonParse(str, fallback) {
   if (!str) return fallback;
   if (typeof str !== 'string') return str;
@@ -195,6 +206,29 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
     db.exec("ALTER TABLE jobs ADD COLUMN canonical_url TEXT DEFAULT ''");
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url)');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_jobs_active_ranked ON jobs(
+      is_active,
+      ${PRIORITY_ORDER_SQL} ASC,
+      match_score DESC,
+      COALESCE(posted_at, first_seen_at) DESC,
+      seniority,
+      status,
+      ${ROLE_CATEGORY_SQL},
+      source_type,
+      first_seen_at,
+      work_mode,
+      location,
+      source_id,
+      is_salary_estimated,
+      salary_min,
+      salary_max,
+      visa_sponsorship,
+      id
+    ) WHERE is_active = 1;
+    CREATE INDEX IF NOT EXISTS idx_jobs_stale ON jobs(is_active, status, last_seen_at)
+    WHERE is_active = 1 AND status = 'new';
+  `);
 
   // Seed default profile if empty
   const existingProfile = db.prepare('SELECT id FROM profile WHERE id = 1').get();
@@ -902,10 +936,10 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
   const srcMeta = sourceId ? db.prepare('SELECT tier, type FROM sources WHERE id = ?').get(sourceId) : null;
 
   const findExistingByHash = db.prepare(
-    'SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at FROM jobs WHERE dedupe_hash = ? OR id = ?'
+    'SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, LENGTH(description_text) AS desc_len FROM jobs WHERE dedupe_hash = ? OR id = ?'
   );
   const findExistingByCanonical = db.prepare(
-    "SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at FROM jobs WHERE canonical_url = ? AND canonical_url != '' LIMIT 1"
+    "SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, LENGTH(description_text) AS desc_len FROM jobs WHERE canonical_url = ? AND canonical_url != '' LIMIT 1"
   );
   const insertJob = db.prepare(`
     INSERT INTO jobs (
@@ -1011,43 +1045,58 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
         const existingTier = resolveSourceTier(db, existing.source_id, existing.source_type);
         const incomingTier = resolveSourceTier(db, j.source_id || sourceId, j.source_type);
         if (incomingTier <= existingTier) {
-          updateJob.run(
-            canonicalUrl,
-            j.external_id,
-            j.source_id,
-            j.source_type,
-            j.title,
-            j.company,
-            j.company_logo || '',
-            j.department || '',
-            j.location || '',
-            j.work_mode || 'unknown',
-            j.seniority || 'unknown',
-            j.employment_type || 'Full-Time',
-            j.experience_min ?? null,
-            j.experience_max ?? null,
-            j.salary_min ?? null,
-            j.salary_max ?? null,
-            j.salary_currency || 'USD',
-            j.salary_period || 'year',
-            j.salary_raw || '',
-            j.is_salary_estimated ? 1 : 0,
-            j.description_html || '',
-            j.description_text || '',
-            skillsJson,
-            JSON.stringify(j.green_flags || []),
-            JSON.stringify(j.red_flags || []),
-            j.visa_sponsorship ? 1 : 0,
-            j.apply_url,
-            j.company_url || '',
-            j.posted_at || null,
-            now,
-            scored.score,
-            JSON.stringify(scored.breakdown),
-            existing.id
-          );
-          deleteFts.run(existing.id);
-          insertFts.run(existing.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
+          const isUnchanged =
+            existing.source_id === j.source_id &&
+            existing.title === j.title &&
+            (existing.location || '') === (j.location || '') &&
+            (existing.work_mode || 'unknown') === (j.work_mode || 'unknown') &&
+            (existing.seniority || 'unknown') === (j.seniority || 'unknown') &&
+            (existing.salary_min ?? null) === (j.salary_min ?? null) &&
+            (existing.salary_max ?? null) === (j.salary_max ?? null) &&
+            (existing.apply_url || '') === (j.apply_url || '') &&
+            Number(existing.match_score ?? 0) === scored.score &&
+            Number(existing.desc_len ?? 0) === (j.description_text || '').length;
+          if (isUnchanged) {
+            touchExistingJob.run(now, existing.id);
+          } else {
+            updateJob.run(
+              canonicalUrl,
+              j.external_id,
+              j.source_id,
+              j.source_type,
+              j.title,
+              j.company,
+              j.company_logo || '',
+              j.department || '',
+              j.location || '',
+              j.work_mode || 'unknown',
+              j.seniority || 'unknown',
+              j.employment_type || 'Full-Time',
+              j.experience_min ?? null,
+              j.experience_max ?? null,
+              j.salary_min ?? null,
+              j.salary_max ?? null,
+              j.salary_currency || 'USD',
+              j.salary_period || 'year',
+              j.salary_raw || '',
+              j.is_salary_estimated ? 1 : 0,
+              j.description_html || '',
+              j.description_text || '',
+              skillsJson,
+              JSON.stringify(j.green_flags || []),
+              JSON.stringify(j.red_flags || []),
+              j.visa_sponsorship ? 1 : 0,
+              j.apply_url,
+              j.company_url || '',
+              j.posted_at || null,
+              now,
+              scored.score,
+              JSON.stringify(scored.breakdown),
+              existing.id
+            );
+            deleteFts.run(existing.id);
+            insertFts.run(existing.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
+          }
         } else {
           touchExistingJob.run(now, existing.id);
         }
@@ -1115,6 +1164,7 @@ export function queryJobs(db, params = {}) {
     sortBy = 'match',
     limit = 40,
     offset = 0,
+    includeStats = true,
   } = params;
 
   const where = ['j.is_active = 1'];
@@ -1160,20 +1210,18 @@ export function queryJobs(db, params = {}) {
     }
   }
 
+  const roleExpr = aliasJobsSql(ROLE_CATEGORY_SQL);
   const effectiveRoleCategory = roleCategory || 'tech';
   if (effectiveRoleCategory === 'tech') {
-    where.push('j.match_breakdown NOT LIKE ?');
-    args.push('%"roleCategory":"non_tech"%');
+    where.push(`${roleExpr} != 'non_tech'`);
   } else if (effectiveRoleCategory !== 'all') {
     const cats = String(effectiveRoleCategory)
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     if (cats.length > 0) {
-      where.push(`(${cats.map(() => 'j.match_breakdown LIKE ?').join(' OR ')})`);
-      for (const c of cats) {
-        args.push(`%"roleCategory":"${c}"%`);
-      }
+      where.push(`${roleExpr} IN (${cats.map(() => '?').join(',')})`);
+      args.push(...cats);
     }
   }
 
@@ -1185,10 +1233,9 @@ export function queryJobs(db, params = {}) {
     args.push(`%"${cleanBatch}"%`, `%${cleanBatch}%`);
   }
 
-  const blrCond = "(j.location LIKE '%Bangalore%' OR j.location LIKE '%Bengaluru%' OR j.location LIKE '%BLR%')";
-  const remoteCond = "(j.work_mode = 'remote' OR j.location LIKE '%Remote%' OR j.location LIKE '%Worldwide%' OR j.location LIKE '%Anywhere%')";
-  const indiaGuard = "(j.location NOT LIKE '%Indiana%' AND j.location NOT LIKE '%Indianapolis%')";
-  const indiaCond = `((j.location LIKE '%India%' AND ${indiaGuard}) OR j.location LIKE '%Hyderabad%' OR j.location LIKE '%Pune%' OR j.location LIKE '%Mumbai%' OR j.location LIKE '%Gurgaon%' OR j.location LIKE '%Gurugram%' OR j.location LIKE '%Noida%' OR j.location LIKE '%Chennai%' OR j.location LIKE '%Delhi%' OR j.location LIKE '%Kolkata%')`;
+  const blrCond = aliasJobsSql(BLR_COND_SQL);
+  const remoteCond = aliasJobsSql(REMOTE_COND_SQL);
+  const indiaCond = aliasJobsSql(INDIA_COND_SQL);
 
   if (locationPriority === 'bangalore') {
     where.push(blrCond);
@@ -1284,14 +1331,7 @@ export function queryJobs(db, params = {}) {
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  const priorityOrderCase = `
-    CASE
-      WHEN ${blrCond} THEN 1
-      WHEN ${remoteCond} THEN 2
-      WHEN ${indiaCond} THEN 3
-      ELSE 4
-    END
-  `;
+  const priorityOrderCase = aliasJobsSql(PRIORITY_ORDER_SQL);
 
   const orderMap = {
     match: `${priorityOrderCase} ASC, j.match_score DESC, COALESCE(j.posted_at, j.first_seen_at) DESC`,
@@ -1309,25 +1349,44 @@ export function queryJobs(db, params = {}) {
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 40));
   const safeOffset = Math.max(0, Number(offset) || 0);
 
-  const listSql = `
-    SELECT j.id, j.dedupe_hash, j.external_id, j.source_id, j.source_type, j.title, j.company,
-           j.company_logo, j.department, j.location, j.work_mode, j.seniority, j.employment_type,
-           j.experience_min, j.experience_max, j.salary_min, j.salary_max, j.salary_currency,
-           j.salary_period, j.salary_raw, j.is_salary_estimated, j.description_text, j.skills,
-           j.green_flags, j.red_flags, j.visa_sponsorship, j.apply_url, j.canonical_url, j.company_url,
-           j.posted_at, j.first_seen_at, j.last_seen_at, j.is_active, j.match_score,
-           j.match_breakdown, j.status, j.user_notes, j.applied_at
+  const idSql = `
+    SELECT j.id
     FROM jobs j
     ${joinFts}
     ${whereSql}
     ORDER BY ${orderSql}
     LIMIT ? OFFSET ?
   `;
-  const rows = db.prepare(listSql).all(...args, safeLimit, safeOffset);
+  const pageIds = db.prepare(idSql).all(...args, safeLimit, safeOffset).map((r) => r.id);
+
+  let rows = [];
+  if (pageIds.length > 0) {
+    const ph = pageIds.map(() => '?').join(',');
+    const hydrateSql = `
+      SELECT j.id, j.dedupe_hash, j.external_id, j.source_id, j.source_type, j.title, j.company,
+             j.company_logo, j.department, j.location, j.work_mode, j.seniority, j.employment_type,
+             j.experience_min, j.experience_max, j.salary_min, j.salary_max, j.salary_currency,
+             j.salary_period, j.salary_raw, j.is_salary_estimated, substr(j.description_text, 1, 240) AS description_text, j.skills,
+             j.green_flags, j.red_flags, j.visa_sponsorship, j.apply_url, j.canonical_url, j.company_url,
+             j.posted_at, j.first_seen_at, j.last_seen_at, j.is_active, j.match_score,
+             j.match_breakdown, j.status, j.user_notes, j.applied_at
+      FROM jobs j
+      WHERE j.id IN (${ph})
+    `;
+    const fetchedRows = db.prepare(hydrateSql).all(...pageIds);
+    const byId = new Map(fetchedRows.map((r) => [r.id, r]));
+    rows = pageIds.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  const jobs = attachAlsoOn(db, rows.map((r) => hydrateJobRow(r, false)));
+  const total = Number(totalRow?.total ?? 0);
+  if (!includeStats) {
+    return { jobs, total };
+  }
 
   // Dashboard global stats (scoped to Intern & Fresher eligible tech roles + total DB count)
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const techGuard = effectiveRoleCategory === 'all' ? '' : `AND match_breakdown NOT LIKE '%"roleCategory":"non_tech"%'`;
+  const techGuard = effectiveRoleCategory === 'all' ? '' : `AND ${ROLE_CATEGORY_SQL} != 'non_tech'`;
   const stats = db
     .prepare(`
       SELECT
@@ -1335,8 +1394,8 @@ export function queryJobs(db, params = {}) {
         SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} THEN 1 ELSE 0 END) AS totalActive,
         SUM(CASE WHEN seniority = 'intern' ${techGuard} THEN 1 ELSE 0 END) AS internCount,
         SUM(CASE WHEN seniority = 'junior' ${techGuard} THEN 1 ELSE 0 END) AS fresherCount,
-        SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND (location LIKE '%Bangalore%' OR location LIKE '%Bengaluru%' OR location LIKE '%BLR%') THEN 1 ELSE 0 END) AS bangaloreCount,
-        SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND (work_mode = 'remote' OR location LIKE '%Remote%' OR location LIKE '%Worldwide%' OR location LIKE '%Anywhere%') THEN 1 ELSE 0 END) AS remoteCount,
+        SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND ${BLR_COND_SQL} THEN 1 ELSE 0 END) AS bangaloreCount,
+        SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND ${REMOTE_COND_SQL} THEN 1 ELSE 0 END) AS remoteCount,
         SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND match_score >= 80 AND status != 'dismissed' THEN 1 ELSE 0 END) AS highMatchCount,
         SUM(CASE WHEN seniority IN ('intern', 'junior') ${techGuard} AND first_seen_at >= ? THEN 1 ELSE 0 END) AS new24h,
         SUM(CASE WHEN status IN ('saved', 'applied', 'screen', 'interview', 'offer') THEN 1 ELSE 0 END) AS trackedCount
@@ -1358,10 +1417,9 @@ export function queryJobs(db, params = {}) {
     `)
     .all();
 
-  const jobs = attachAlsoOn(db, rows.map((r) => hydrateJobRow(r, false)));
   return {
     jobs,
-    total: Number(totalRow?.total ?? 0),
+    total,
     stats: {
       totalAllActive: Number(stats?.totalAllActive ?? 0),
       totalActive: Number(stats?.totalActive ?? 0),

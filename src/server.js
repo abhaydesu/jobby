@@ -170,6 +170,7 @@ export function createApp({ dbPath } = {}) {
           sortBy: sp.get('sortBy') || 'match',
           limit: Number(sp.get('limit') || 40),
           offset: Number(sp.get('offset') || 0),
+          includeStats: sp.get('includeStats') !== '0' && sp.get('includeStats') !== 'false',
         });
         return sendJson(res, 200, result);
       }

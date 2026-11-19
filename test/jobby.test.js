@@ -1083,3 +1083,97 @@ test('NLP additions: SDE-2 mid-level cue, eligibility penalty & batch filter, an
   assert.equal(freshOnly.jobs[0].external_id, 'elig-2026');
   db.close();
 });
+
+test('Pagination covering index, includeStats=false slice, incremental upsert & HTTP /api/jobs includeStats=0', async () => {
+  const { db, server } = createApp({ dbPath: ':memory:' });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  try {
+    const longBody = 'Build distributed TypeScript React Node.js systems across India and remote teams. '.repeat(8);
+    const jobs = [1, 2, 3, 4, 5].map((n) =>
+      normalizeJobPayload({
+        sourceId: 'ashby-linear',
+        sourceType: 'ashby',
+        externalId: `pag-${n}`,
+        title: `Software Engineer Intern ${n}`,
+        company: `Company${n}`,
+        location: n % 2 === 0 ? 'Bengaluru, India' : 'Remote',
+        explicitRemote: n % 2 !== 0,
+        descriptionHtml: `<p>${longBody}</p>`,
+        applyUrl: `https://jobs.ashbyhq.com/linear/pag-${n}`,
+      })
+    );
+    upsertJobsBatch(db, jobs, 'ashby-linear');
+
+    const p1 = queryJobs(db, { offset: 0, limit: 2, includeStats: true });
+    const p2 = queryJobs(db, { offset: 2, limit: 2, includeStats: false });
+    const p3 = queryJobs(db, { offset: 4, limit: 2, includeStats: false });
+
+    assert.equal(p1.total, 5);
+    assert.equal(p1.jobs.length, 2);
+    assert.ok(p1.stats && p1.facets);
+    assert.equal(p2.total, 5);
+    assert.equal(p2.jobs.length, 2);
+    assert.equal(p2.stats, undefined);
+    assert.equal(p2.facets, undefined);
+    assert.equal(p3.jobs.length, 1);
+    const seen = new Set([...p1.jobs, ...p2.jobs, ...p3.jobs].map((j) => j.id));
+    assert.equal(seen.size, 5);
+    assert.ok(p2.jobs[0].snippet.length <= 223);
+    assert.ok(p2.jobs[0].snippet.endsWith('...'));
+
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT j.id FROM jobs j
+         WHERE j.is_active = 1
+           AND COALESCE(json_extract(j.match_breakdown, '$.roleCategory'), 'tech') != 'non_tech'
+           AND j.seniority IN ('intern', 'junior')
+           AND j.status != 'dismissed'
+         ORDER BY
+           CASE
+             WHEN (j.location LIKE '%Bangalore%' OR j.location LIKE '%Bengaluru%' OR j.location LIKE '%BLR%') THEN 1
+             WHEN (j.work_mode = 'remote' OR j.location LIKE '%Remote%' OR j.location LIKE '%Worldwide%' OR j.location LIKE '%Anywhere%') THEN 2
+             WHEN ((j.location LIKE '%India%' AND (j.location NOT LIKE '%Indiana%' AND j.location NOT LIKE '%Indianapolis%')) OR j.location LIKE '%Hyderabad%' OR j.location LIKE '%Pune%' OR j.location LIKE '%Mumbai%' OR j.location LIKE '%Gurgaon%' OR j.location LIKE '%Gurugram%' OR j.location LIKE '%Noida%' OR j.location LIKE '%Chennai%' OR j.location LIKE '%Delhi%' OR j.location LIKE '%Kolkata%') THEN 3
+             ELSE 4
+           END ASC,
+           j.match_score DESC,
+           COALESCE(j.posted_at, j.first_seen_at) DESC
+         LIMIT 30 OFFSET 30`
+      )
+      .all();
+    assert.ok(plan.some((r) => String(r.detail).includes('USING COVERING INDEX idx_jobs_active_ranked')));
+    assert.ok(!plan.some((r) => String(r.detail).includes('USE TEMP B-TREE FOR ORDER BY')));
+
+    upsertJobsBatch(db, [jobs[0]], 'ashby-linear');
+    const unchangedRow = db.prepare('SELECT title FROM jobs WHERE external_id = ?').get('pag-1');
+    assert.equal(unchangedRow.title, 'Software Engineer Intern 1');
+
+    const modifiedJob = normalizeJobPayload({
+      sourceId: 'ashby-linear',
+      sourceType: 'ashby',
+      externalId: 'pag-1',
+      title: 'Software Engineer Intern Updated',
+      company: 'Company1',
+      location: 'Remote',
+      explicitRemote: true,
+      descriptionHtml: `<p>${longBody} Extra Rust Kubernetes.</p>`,
+      applyUrl: 'https://jobs.ashbyhq.com/linear/pag-1',
+    });
+    upsertJobsBatch(db, [modifiedJob], 'ashby-linear');
+    const updatedSearch = queryJobs(db, { q: 'Updated', includeStats: false });
+    assert.equal(updatedSearch.total, 1);
+    assert.equal(updatedSearch.jobs[0].title, 'Software Engineer Intern Updated');
+
+    const httpPage = await fetch(`${baseUrl}/api/jobs?offset=1&limit=2&includeStats=0`).then((r) => r.json());
+    assert.equal(httpPage.total, 5);
+    assert.equal(httpPage.jobs.length, 2);
+    assert.equal(httpPage.stats, undefined);
+    assert.equal(httpPage.facets, undefined);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+  }
+});

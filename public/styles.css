@@ -1449,6 +1449,12 @@ input[type="range"] {
   align-items: center;
 }
 
+.jobs-stack.is-loading {
+  opacity: 0.58;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
 .pagination-bar {
   display: flex;
   justify-content: center;
