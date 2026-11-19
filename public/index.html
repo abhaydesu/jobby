@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jobby — Intern &amp; New-Grad Job Intelligence</title>
+  <script>
+    try {
+      const t = localStorage.getItem('jobby_theme');
+      if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+    } catch {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -11,13 +17,12 @@
 </head>
 <body>
   <div class="app-shell">
-    <!-- Minimalist Monochrome Header (Aside + Aceternity style) -->
     <header class="topbar">
       <div class="topbar-inner">
         <div class="topbar-left">
           <div class="brand">
             <div class="brand-mark" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <rect x="2" y="2" width="5" height="5" stroke="currentColor" stroke-width="1.5" />
                 <rect x="9" y="2" width="5" height="5" fill="currentColor" />
                 <rect x="2" y="9" width="5" height="5" fill="currentColor" fill-opacity="0.35" />
@@ -25,8 +30,8 @@
               </svg>
             </div>
             <span class="brand-name">jobby</span>
-            <span class="brand-divider">/</span>
             <span class="brand-tag mono">26–27</span>
+            <span class="brand-divider" aria-hidden="true"></span>
           </div>
 
           <nav class="nav-tabs" role="tablist">
@@ -71,7 +76,6 @@
       </div>
     </header>
 
-    <!-- Live Scrape Telemetry Bar -->
     <div class="live-banner hidden" id="live-banner">
       <div class="live-banner-inner">
         <div class="live-banner-top">
@@ -88,55 +92,68 @@
     </div>
 
     <main class="main-frame">
-      <!-- TAB 1: JOB FEED -->
       <section class="tab-panel active" id="panel-feed">
-        <!-- Spacious 4-Cell Summary Grid -->
-        <div class="arch-hero">
-          <div class="arch-cell arch-span-2 spotlight-card">
-            <div class="cell-head">
-              <span class="eyebrow mono">ROLE SCOPE</span>
-              <span class="stat-inline mono"><strong id="kpi-total">0</strong> openings</span>
+        <div class="command-deck">
+          <div class="deck-top">
+            <div class="deck-heading">
+              <h1 class="deck-title">Internships &amp; New-Grad Roles</h1>
+              <p class="deck-subtitle">Bengaluru &amp; Remote prioritized for 2026/27 engineering graduates · <span class="mono" id="kpi-role-split">0 intern · 0 grad</span></p>
             </div>
-            <h1 class="hero-title">Internships &amp; Fresher Roles</h1>
-            <p class="hero-desc">Scoped for final-year college students and 2026/27 graduates. <span class="mono" id="kpi-role-split">0 intern · 0 grad</span></p>
-            <div class="segmented-bar" id="bento-role-scope">
-              <button class="seg-btn active" data-seniority="intern,junior">Intern &amp; Fresher</button>
-              <button class="seg-btn" data-seniority="intern">Internships</button>
-              <button class="seg-btn" data-seniority="junior">New Grad / SDE-1</button>
-              <button class="seg-btn" data-seniority="all">All Levels</button>
+            <div class="kpi-strip">
+              <div class="kpi-item">
+                <span class="kpi-label">Active</span>
+                <div class="kpi-val-row">
+                  <span class="kpi-val mono" id="kpi-total">0</span>
+                </div>
+              </div>
+              <span class="kpi-sep" aria-hidden="true"></span>
+              <div class="kpi-item">
+                <span class="kpi-label">Bengaluru / Remote</span>
+                <div class="kpi-val-row">
+                  <span class="kpi-val mono"><span id="kpi-blr">0</span> · <span id="kpi-remote">0</span></span>
+                </div>
+              </div>
+              <span class="kpi-sep" aria-hidden="true"></span>
+              <div class="kpi-item">
+                <span class="kpi-label">Fit ≥ 80%</span>
+                <div class="kpi-val-row">
+                  <span class="kpi-val mono" id="kpi-high">0</span>
+                </div>
+              </div>
+              <span class="kpi-sep" aria-hidden="true"></span>
+              <div class="kpi-item">
+                <span class="kpi-label">Fresh 24h</span>
+                <div class="kpi-val-row">
+                  <span class="kpi-val mono" id="kpi-new">0</span>
+                  <span class="kpi-sub mono"><span id="kpi-sources">0</span> · <span id="kpi-tracked">0</span></span>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="arch-cell arch-span-2 spotlight-card">
-            <div class="cell-head">
-              <span class="eyebrow mono">LOCATION PRIORITY</span>
-              <span class="stat-inline mono"><strong id="kpi-blr">0</strong> BLR · <strong id="kpi-remote">0</strong> Remote</span>
+          <div class="deck-controls">
+            <div class="control-cluster">
+              <span class="cluster-label">Scope</span>
+              <div class="segmented-bar" id="bento-role-scope">
+                <button class="seg-btn active" data-seniority="intern,junior">Intern &amp; Fresher</button>
+                <button class="seg-btn" data-seniority="intern">Internships</button>
+                <button class="seg-btn" data-seniority="junior">New Grad / SDE-1</button>
+                <button class="seg-btn" data-seniority="all">All Levels</button>
+              </div>
             </div>
-            <h2 class="hero-title-sm">Bengaluru &amp; Remote First</h2>
-            <p class="hero-desc">Ranks Bengaluru and Remote at the top while keeping India hubs and global roles accessible below.</p>
-            <div class="segmented-bar" id="bento-loc-priority">
-              <button class="seg-btn active" data-loc="">Priority Order</button>
-              <button class="seg-btn" data-loc="bangalore">Bengaluru</button>
-              <button class="seg-btn" data-loc="remote">Remote</button>
-              <button class="seg-btn" data-loc="india">India Hubs</button>
-              <button class="seg-btn" data-loc="global">Global</button>
+            <div class="control-cluster">
+              <span class="cluster-label">Location</span>
+              <div class="segmented-bar" id="bento-loc-priority">
+                <button class="seg-btn active" data-loc="">Priority Order</button>
+                <button class="seg-btn" data-loc="bangalore">Bengaluru</button>
+                <button class="seg-btn" data-loc="remote">Remote</button>
+                <button class="seg-btn" data-loc="india">India Hubs</button>
+                <button class="seg-btn" data-loc="global">Global</button>
+              </div>
             </div>
-          </div>
-
-          <div class="arch-cell arch-stat spotlight-card">
-            <span class="eyebrow mono">FIT ≥ 80%</span>
-            <div class="stat-figure mono" id="kpi-high">0</div>
-            <div class="stat-caption">Strong profile matches</div>
-          </div>
-
-          <div class="arch-cell arch-stat spotlight-card">
-            <span class="eyebrow mono">INGESTION</span>
-            <div class="stat-figure mono" id="kpi-new">0</div>
-            <div class="stat-caption"><span class="mono" id="kpi-sources">0</span> feeds · <span class="mono" id="kpi-tracked">0</span> tracked</div>
           </div>
         </div>
 
-        <!-- Two-Column Workspace -->
         <div class="workspace-grid">
           <aside class="filter-rail">
             <div class="rail-head">
@@ -156,7 +173,7 @@
               <label>Quick Intent</label>
               <div class="intent-grid">
                 <button class="intent-btn" id="qf-high-fit" type="button">
-                  <span class="dot accent"></span> Fit ≥ 80%
+                  <span class="dot positive"></span> Fit ≥ 80%
                 </button>
                 <button class="intent-btn" id="qf-disclosed" type="button">
                   <span class="dot accent"></span> Disclosed Pay
@@ -170,7 +187,7 @@
             <div class="filter-group">
               <label for="f-role-category">Role Track</label>
               <select id="f-role-category">
-                <option value="tech" selected>All Tech &amp; Product (No Sales/HR/Ops)</option>
+                <option value="tech" selected>Tech &amp; Product Roles</option>
                 <option value="swe">Software Engineering (Full-Stack / BE / FE)</option>
                 <option value="ai_data">AI / ML / Data Science &amp; Eng</option>
                 <option value="devops_sec">Cloud / DevOps / SRE / Security</option>
@@ -316,7 +333,7 @@
         <div class="section-head">
           <div>
             <h2>Fresh Drops — Apply Early</h2>
-            <p class="muted">Newly discovered intern and new-grad openings ordered by when Jobby first spotted them.</p>
+            <p>Newly discovered intern and new-grad openings ordered by when Jobby first spotted them.</p>
           </div>
           <div class="btn-row">
             <button class="btn btn-secondary" id="btn-refresh-fresh">Refresh</button>
@@ -337,10 +354,10 @@
               <button class="seg-btn" data-loc="bangalore" type="button">Bengaluru</button>
               <button class="seg-btn" data-loc="remote" type="button">Remote</button>
             </div>
-            <select id="fresh-source-type" class="compact-input" style="width:auto; min-width:175px;">
+            <select id="fresh-source-type" class="compact-input">
               <option value="">All Sources</option>
             </select>
-            <label class="check-row" style="margin:0;">
+            <label class="check-row">
               <input type="checkbox" id="fresh-untriaged-only" checked />
               <span>Untriaged only</span>
             </label>
@@ -351,24 +368,22 @@
         <div class="jobs-stack" id="fresh-jobs-list"></div>
       </section>
 
-      <!-- TAB 2: PIPELINE CRM KANBAN -->
       <section class="tab-panel" id="panel-crm">
         <div class="section-head">
           <div>
             <h2>Application Pipeline</h2>
-            <p class="muted">Track shortlisted roles from initial save through technical interviews and offer.</p>
+            <p>Track shortlisted roles from initial save through technical interviews and offer.</p>
           </div>
           <button class="btn btn-secondary" id="btn-refresh-crm">Refresh</button>
         </div>
         <div class="kanban-board" id="kanban-board"></div>
       </section>
 
-      <!-- TAB 3: SCRAPER ENGINE & ATS DIRECTORY -->
       <section class="tab-panel" id="panel-scraper">
         <div class="section-head">
           <div>
             <h2>Scraper Engine &amp; ATS Registry</h2>
-            <p class="muted">Manage direct Tier 1 ATS endpoints, community startup feeds, global boards, and URL fingerprinting.</p>
+            <p>Manage direct Tier 1 ATS endpoints, community startup feeds, global boards, and URL fingerprinting.</p>
           </div>
           <div class="btn-row">
             <button class="btn btn-secondary" id="btn-scrape-ats">Scrape ATS Only</button>
@@ -378,7 +393,7 @@
         </div>
 
         <div class="two-col-cards">
-          <div class="panel-box spotlight-card">
+          <div class="panel-box">
             <h3>Continuous Background Scheduler</h3>
             <p class="muted small">Automatically polls due ATS boards and feeds on your configured cadence.</p>
             <div class="form-row">
@@ -400,7 +415,7 @@
             <div class="sched-meta" id="sched-meta"></div>
           </div>
 
-          <div class="panel-box spotlight-card">
+          <div class="panel-box">
             <h3>Auto-Discover Company Career Page</h3>
             <p class="muted small">Paste any company careers URL to fingerprint its ATS or extract Schema.org JobPosting JSON-LD.</p>
             <div class="form-row">
@@ -415,7 +430,7 @@
               <input type="text" id="import-url" placeholder="https://company.com/careers (ATS or JSON-LD)" />
               <button class="btn btn-secondary" id="btn-import-url">Import URL</button>
             </div>
-            <div class="form-row" style="margin-top:8px;">
+            <div class="form-row">
               <input type="file" id="import-eml-file" accept=".eml,.mbox,.txt" />
               <button class="btn btn-secondary" id="btn-import-eml">Import EML / mbox</button>
             </div>
@@ -510,12 +525,11 @@
         </div>
       </section>
 
-      <!-- TAB 4: PROFILE & RESUME STUDIO -->
       <section class="tab-panel" id="panel-profile">
         <div class="section-head">
           <div>
             <h2>Profile &amp; Resume Scoring</h2>
-            <p class="muted">Adjust your stack, target roles, and scoring weights. Saving immediately re-scores every opening.</p>
+            <p>Adjust your stack, target roles, and scoring weights. Saving immediately re-scores every opening.</p>
           </div>
           <div class="btn-row">
             <button class="btn btn-secondary" data-preset="student_swe">Preset: SWE</button>
@@ -526,17 +540,17 @@
         </div>
 
         <div class="two-col-cards">
-          <div class="panel-box spotlight-card">
+          <div class="panel-box">
             <h3>Resume Parser</h3>
             <p class="muted small">Paste plain resume text to automatically extract technical skills and target roles.</p>
             <textarea id="prof-resume" rows="12" placeholder="Paste your resume text..."></textarea>
-            <div class="btn-row" style="margin-top: 10px;">
+            <div class="btn-row" style="margin-top: 12px;">
               <button class="btn btn-primary" id="btn-parse-resume">Extract from Resume</button>
               <span class="muted small" id="parse-status"></span>
             </div>
           </div>
 
-          <div class="panel-box spotlight-card">
+          <div class="panel-box">
             <h3>Candidate Configuration</h3>
             <div class="form-grid-2">
               <div class="field">
@@ -556,7 +570,7 @@
 
             <div class="field">
               <label for="prof-titles">Target Titles</label>
-              <input type="text" id="prof-titles" />
+              <textarea id="prof-titles" rows="2"></textarea>
             </div>
 
             <div class="field">
@@ -630,24 +644,22 @@
         </div>
       </section>
 
-      <!-- TAB 5: MARKET ANALYTICS -->
       <section class="tab-panel" id="panel-analytics">
         <div class="section-head">
           <div>
             <h2>Market Analytics</h2>
-            <p class="muted">Live distributions across all active postings indexed in SQLite.</p>
+            <p>Live distributions across all active postings indexed in SQLite.</p>
           </div>
           <button class="btn btn-secondary" id="btn-refresh-analytics">Refresh</button>
         </div>
         <div class="analytics-grid" id="analytics-grid"></div>
       </section>
 
-      <!-- TAB 6: SCRAPING RESEARCH HUB -->
       <section class="tab-panel" id="panel-research">
         <div class="section-head">
           <div>
             <h2>Ingestion Architecture &amp; Research</h2>
-            <p class="muted">Technical breakdown of ATS public JSON APIs, career page fingerprinting, and deduplication.</p>
+            <p>Technical breakdown of ATS public JSON APIs, career page fingerprinting, and deduplication.</p>
           </div>
         </div>
         <div class="panel-box research-card" id="research-content">Loading architecture documentation...</div>
@@ -655,7 +667,6 @@
     </main>
   </div>
 
-  <!-- Slide-Over Sheet (Aside-inspired Drawer) -->
   <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   <aside class="job-drawer hidden" id="job-drawer" aria-hidden="true">
     <div class="drawer-header">
@@ -719,7 +730,7 @@
         <h3>Application Notes</h3>
         <p class="muted small">Stored persistently in SQLite for this role.</p>
         <textarea id="d-notes-input" rows="10" placeholder="Referral contact, recruiter email, interview prep..."></textarea>
-        <div class="btn-row" style="margin-top: 10px;">
+        <div class="btn-row" style="margin-top: 12px;">
           <button class="btn btn-primary" id="btn-save-notes">Save Notes</button>
           <span class="muted small" id="d-notes-status"></span>
         </div>
@@ -729,7 +740,6 @@
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Sticky Keyboard Triage Bar (Recognition over Recall) -->
   <footer class="kbd-bar mono" id="kbd-bar">
     <span><kbd>J</kbd>/<kbd>K</kbd> Navigate</span>
     <span><kbd>Enter</kbd> Inspect</span>

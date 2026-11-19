@@ -140,13 +140,20 @@ function fmtStipendPill(job) {
   const basis = job.salary_basis || bd.salaryBasis || (job.is_salary_estimated ? 'Market benchmark estimate' : 'Extracted directly from job listing');
 
   if (!job.is_salary_estimated) {
-    return `<span class="stipend-line accent-pill mono" title="${esc(`Confidence: ${conf} · ${basis}`)}"><span class="dot accent"></span>${esc(moRange)} <span class="stipend-note">listed</span></span>`;
+    return `<span class="stipend-line accent-pill mono" title="${esc(`Confidence: ${conf} · ${basis}`)}"><span class="dot positive"></span>${esc(moRange)} <span class="stipend-note">listed</span></span>`;
   }
-  const rawNote =
-    job.salary_raw && job.salary_raw.includes('(')
-      ? job.salary_raw.slice(job.salary_raw.indexOf('(') + 1, job.salary_raw.lastIndexOf(')'))
-      : 'benchmark est.';
-  return `<span class="stipend-line estimated mono" title="${esc(`Estimated (${conf} confidence) · Basis: ${basis}`)}"><span class="dot muted"></span>~${esc(moRange)} <span class="stipend-note">${esc(rawNote)} [${esc(conf)}]</span></span>`;
+  return `<span class="stipend-line estimated mono" title="${esc(`Estimated (${conf} confidence) · Basis: ${basis}`)}">~${esc(moRange)} <span class="stipend-note">est.</span></span>`;
+}
+
+function companyInitials(company = '') {
+  const words = String(company || '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return 'CO';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
 function timeAgo(isoStr) {
@@ -162,11 +169,6 @@ function timeAgo(isoStr) {
   return `${Math.floor(days / 30)}mo`;
 }
 
-function scoreDotClass(score) {
-  if (score >= 80) return 'accent';
-  return 'muted';
-}
-
 function detectJobPriorityTier(job) {
   const bdTier = job.match_breakdown?.locationTier;
   if (bdTier) return bdTier;
@@ -178,27 +180,17 @@ function detectJobPriorityTier(job) {
 }
 
 function renderPriorityPill(tier) {
-  if (tier === 'bangalore') return '<span class="tag-pill accent-pill mono"><span class="dot accent"></span>BENGALURU</span>';
-  if (tier === 'remote') return '<span class="tag-pill accent-pill mono"><span class="dot accent"></span>REMOTE</span>';
-  if (tier === 'india') return '<span class="tag-pill mono"><span class="dot muted"></span>INDIA</span>';
-  return '<span class="tag-pill mono">GLOBAL</span>';
+  if (tier === 'bangalore') return '<span class="tag-pill strong"><span class="dot accent"></span>Bengaluru</span>';
+  if (tier === 'remote') return '<span class="tag-pill strong"><span class="dot accent"></span>Remote</span>';
+  if (tier === 'india') return '<span class="tag-pill"><span class="dot muted"></span>India</span>';
+  return '<span class="tag-pill">Global</span>';
 }
 
 function renderRolePill(seniority) {
-  if (seniority === 'intern') return '<span class="tag-pill strong mono">INTERN</span>';
-  if (seniority === 'junior') return '<span class="tag-pill mono">NEW GRAD</span>';
-  if (seniority && seniority !== 'unknown') return `<span class="tag-pill mono">${esc(seniority.toUpperCase())}</span>`;
+  if (seniority === 'intern') return '<span class="tag-pill strong">Intern</span>';
+  if (seniority === 'junior') return '<span class="tag-pill">New Grad</span>';
+  if (seniority && seniority !== 'unknown') return `<span class="tag-pill">${esc(seniority.replace(/\b\w/g, (c) => c.toUpperCase()))}</span>`;
   return '';
-}
-
-function bindSpotlightHandlers() {
-  document.addEventListener('pointermove', (e) => {
-    const card = e.target.closest('.spotlight-card');
-    if (!card) return;
-    const rect = card.getBoundingClientRect();
-    card.style.setProperty('--mx', `${e.clientX - rect.left}px`);
-    card.style.setProperty('--my', `${e.clientY - rect.top}px`);
-  });
 }
 
 function switchTab(tabName) {
@@ -736,7 +728,7 @@ function renderJobRowHtml(job, idx, { isFocused = false, ageField = 'posted_at' 
   const isSeen = state.seenIds.has(job.id);
 
   const skillsHtml = (job.skills || [])
-    .slice(0, 7)
+    .slice(0, 5)
     .map((sk) => {
       const cls = matchedSet.has(sk.toLowerCase()) ? 'matched' : '';
       return `<span class="skill-chip ${cls}">${esc(sk)}</span>`;
@@ -744,47 +736,64 @@ function renderJobRowHtml(job, idx, { isFocused = false, ageField = 'posted_at' 
     .join('');
 
   const saveLabel = job.status === 'saved' ? 'Saved' : job.status !== 'new' ? job.status : 'Save';
-  const ageVal = ageField === 'first_seen_at' ? `new ${timeAgo(job.first_seen_at)}` : timeAgo(job.posted_at || job.first_seen_at);
+  const isFreshRow = ageField === 'first_seen_at';
+  const ageVal = isFreshRow ? `new ${timeAgo(job.first_seen_at)}` : timeAgo(job.posted_at || job.first_seen_at);
+  const roleLabel =
+    job.seniority === 'intern'
+      ? 'Intern'
+      : job.seniority === 'junior'
+        ? 'New Grad'
+        : job.seniority && job.seniority !== 'unknown'
+          ? job.seniority.replace(/\b\w/g, (c) => c.toUpperCase())
+          : '';
+  const isPriorityLoc = locTier === 'bangalore' || locTier === 'remote';
+  const alsoOnHtml =
+    Array.isArray(job.also_on) && job.also_on.length
+      ? `<span class="tag-pill mono" title="${esc(job.also_on.map((x) => x.label).join(', '))}">+${job.also_on.length}</span>`
+      : '';
 
   return `
-    <article class="job-row spotlight-card ${isFocused ? 'focused' : ''} ${isSeen ? 'seen' : ''}" data-job-id="${esc(job.id)}" data-idx="${idx}">
-      <div class="score-box">
-        <div class="score-top">
-          <span class="dot ${scoreDotClass(job.match_score)}"></span>
-          <span class="score-val mono">${job.match_score}</span>
-        </div>
-        <span class="score-sub mono">match</span>
+    <article class="job-row ${isFocused ? 'focused' : ''} ${isSeen ? 'seen' : ''}" data-job-id="${esc(job.id)}" data-idx="${idx}">
+      <div class="row-leading">
+        <div class="company-avatar">${esc(companyInitials(job.company))}</div>
+        <span class="score-pill ${job.match_score >= 80 ? 'high' : ''} mono" title="Profile match score">
+          <span class="dot ${job.match_score >= 80 ? 'positive' : 'muted'}"></span>${job.match_score}
+        </span>
       </div>
 
       <div class="job-main">
-        <div class="job-eyebrow">
-          <span class="job-company">${esc(job.company)}</span>
-          <span class="job-sep">/</span>
-          <span>${esc(job.location || 'Unspecified')}</span>
-          <span class="job-sep">/</span>
-          <span class="mono">${esc(job.source_type)}</span>
-          ${Array.isArray(job.also_on) && job.also_on.length ? `<span class="badge-tag mono" title="${esc(job.also_on.map((x) => x.label).join(', '))}">also on: ${esc(job.also_on.map((x) => x.label).slice(0, 3).join(', '))}</span>` : ''}
-          ${job.department ? `<span class="job-sep">/</span><span>${esc(job.department)}</span>` : ''}
-        </div>
-
-        <div class="job-title-row">
+        <div class="job-head-line">
           <h3 class="job-title">${esc(job.title)}</h3>
-          ${renderPriorityPill(locTier)}
-          ${renderRolePill(job.seniority)}
           ${stipendPill}
         </div>
 
-        ${skillsHtml ? `<div class="skills-row">${skillsHtml}</div>` : ''}
-        <div class="match-reason-line">${buildMatchReasonLine(job)}</div>
+        <div class="job-meta-line">
+          <span class="job-company">${esc(job.company)}</span>
+          <span class="job-sep">·</span>
+          <span class="loc-chip ${isPriorityLoc ? 'priority' : ''}">
+            ${isPriorityLoc ? '<span class="dot accent"></span>' : ''}${esc(job.location || 'Unspecified')}
+          </span>
+          ${roleLabel ? `<span class="job-sep">·</span><span>${esc(roleLabel)}</span>` : ''}
+          <span class="job-sep">·</span>
+          <span>${esc(fmtSourceLabel(job.source_type))}</span>
+          ${alsoOnHtml}
+        </div>
+
+        <div class="job-foot-line">
+          ${skillsHtml ? `<div class="skills-row">${skillsHtml}</div>` : ''}
+          <div class="match-reason-line">${buildMatchReasonLine(job)}</div>
+        </div>
       </div>
 
       <div class="job-actions">
-        <span class="posted-age mono">${esc(ageVal)}</span>
+        <span class="posted-age mono">
+          ${isFreshRow ? '<span class="dot accent"></span>' : ''}${esc(ageVal)}
+        </span>
         <div class="action-pair">
           <button class="btn btn-secondary btn-sm act-save" data-id="${esc(job.id)}">${esc(saveLabel)}</button>
-          <a class="btn btn-primary btn-sm act-apply" href="${esc(job.apply_url)}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+          <a class="btn btn-ink btn-sm act-apply" href="${esc(job.apply_url)}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+          <button class="btn btn-ghost btn-sm act-dismiss" data-id="${esc(job.id)}" title="Dismiss">Dismiss</button>
         </div>
-        <button class="btn btn-ghost btn-sm act-dismiss" data-id="${esc(job.id)}">Dismiss</button>
       </div>
     </article>`;
 }
@@ -1107,7 +1116,7 @@ async function openJobDrawer(jobId) {
   $$('.drawer-tab').forEach((t) => t.classList.toggle('active', t.dataset.dtab === 'overview'));
   $$('.drawer-subpanel').forEach((p) => p.classList.toggle('active', p.id === 'dpanel-overview'));
 
-  document.body.classList.toggle('inspector-split', state.tab === 'feed');
+  document.body.classList.toggle('inspector-split', state.tab === 'feed' || state.tab === 'fresh');
   $('#drawer-backdrop').classList.remove('hidden');
   $('#job-drawer').classList.remove('hidden');
 }
@@ -1688,15 +1697,17 @@ function handleSseEvent(evt) {
 }
 
 function bindEvents() {
-  bindSpotlightHandlers();
-
   $$('.nav-tab').forEach((btn) => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
   $('#btn-theme-toggle').addEventListener('click', () => {
     const html = document.documentElement;
-    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+    const nextTheme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+    html.dataset.theme = nextTheme;
+    try {
+      localStorage.setItem('jobby_theme', nextTheme);
+    } catch {}
   });
 
   $('#btn-global-scrape').addEventListener('click', () => triggerScrape('all'));
