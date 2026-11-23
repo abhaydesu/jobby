@@ -13,9 +13,8 @@ import {
   extractVisaSponsorship,
   classifyLocationTier,
   classifyRoleCategory,
-  estimateStipendBenchmark,
 } from '../src/nlp.js';
-import { scoreJobAgainstProfile, parseResumeText, generateJobTailoring } from '../src/matcher.js';
+import { scoreJobAgainstProfile, parseResumeText } from '../src/matcher.js';
 import { initDb, getProfile, updateProfile, upsertJobsBatch, queryJobs, recordSourceHealth, getSourcesHealth, getSourceCandidates, expireStaleJobs } from '../src/db.js';
 import { normalizeJobPayload, fetchWithHardening, computeDedupeHash, normalizeCityAliases, canonicalizeApplyUrl } from '../src/scrapers/normalize.js';
 import { detectAtsFromText, extractJsonLdJobPostings } from '../src/scrapers/fingerprinter.js';
@@ -31,7 +30,10 @@ import {
   parseInstahyreJson,
   parseLinkedInGuestCards,
   scrapeLinkedInGuest,
+  extractHnContacts,
 } from '../src/scrapers/aggregators.js';
+import { parseYcPageProps, mapYcPosting, normalizeYcLocation, ycSalaryToText, scrapeYCJobs } from '../src/scrapers/startups.js';
+import { parseCutshortSitemap, selectCutshortCandidates, parseCutshortJobPage } from '../src/scrapers/india.js';
 import { createApp } from '../src/server.js';
 
 test('NLP: HTML stripping and XSS sanitization', () => {
@@ -119,7 +121,7 @@ test('Matcher: 100-point scoring, resume parser, and tailoring generator', () =>
   const strongJob = {
     title: 'Senior Full-Stack Engineer',
     company: 'Acme AI',
-    location: 'Remote (US)',
+    location: 'Remote (Worldwide)',
     work_mode: 'remote',
     seniority: 'senior',
     experience_min: 4,
@@ -153,15 +155,17 @@ test('Matcher: 100-point scoring, resume parser, and tailoring generator', () =>
   assert.ok(strongScore.breakdown.missingJobSkills.includes('Kubernetes'));
 
   const parsed = parseResumeText(
-    'Senior Full-Stack Engineer (2019 - 2026). Built production TypeScript, React, Next.js, Python, FastAPI, PostgreSQL, and AWS microservices.'
+    'Senior Full-Stack Engineer with 6+ years of experience. Built production TypeScript, React, Next.js, Python, FastAPI, PostgreSQL, and AWS microservices.'
   );
   assert.ok(parsed.primary_skills.includes('TypeScript'));
   assert.ok(parsed.primary_skills.includes('Python'));
   assert.ok(parsed.experience_years >= 6);
 
-  const tailoring = generateJobTailoring(strongJob, profile);
-  assert.ok(tailoring.outreachNote.includes('Acme AI'));
-  assert.ok(tailoring.atsKeywords.includes('TypeScript'));
+  // A student resume's education years must not be read as work experience
+  const student = parseResumeText('B.Tech Computer Science, 2023 - 2027. Projects in React, Node.js and PostgreSQL.');
+  assert.equal(student.experience_years, 0);
+  assert.deepEqual(student.preferred_seniority, ['intern', 'junior']);
+  assert.ok(!student.target_titles.some((t) => /senior/i.test(t)));
 });
 
 test('Fingerprinter: detects Greenhouse, Ashby, Lever, and Schema.org JobPosting JSON-LD', () => {
@@ -247,9 +251,20 @@ test('Database: deduplication preserves CRM state and FTS5 search + profile resc
 
 test('Final-Year Intern/Fresher filter & Bangalore/Remote priority ordering', () => {
   assert.equal(classifyLocationTier('Bengaluru, India', 'onsite'), 'bangalore');
-  assert.equal(classifyLocationTier('San Francisco, CA', 'remote'), 'remote');
   assert.equal(classifyLocationTier('Hyderabad, India', 'hybrid'), 'india');
-  assert.equal(classifyLocationTier('Berlin, Germany', 'onsite'), 'global');
+  assert.equal(classifyLocationTier('Berlin, Germany', 'onsite'), 'abroad');
+  // Remote is only "remote" for an India-based candidate if it isn't locked to another country
+  assert.equal(classifyLocationTier('Remote', 'remote'), 'remote');
+  assert.equal(classifyLocationTier('Remote (Anywhere in the World)', 'remote'), 'remote');
+  assert.equal(classifyLocationTier('Remote - India', 'remote'), 'remote');
+  assert.equal(classifyLocationTier('Remote, APAC', 'remote'), 'remote');
+  assert.equal(classifyLocationTier('San Francisco, CA', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('Remote (USA)', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('Remote - US', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('Home based - EMEA', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('San Francisco / Remote', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('Anywhere in France', 'remote'), 'remote_restricted');
+  assert.equal(classifyLocationTier('Remote', 'remote', 'Candidates must be located in the United States.'), 'remote_restricted');
 
   const expNewGrad = extractExperience('Ideal for final-year students pursuing a Bachelor degree.', 'Software Engineer (2026)');
   assert.equal(expNewGrad.seniority, 'junior');
@@ -299,37 +314,35 @@ test('Final-Year Intern/Fresher filter & Bangalore/Remote priority ordering', ()
 
   upsertJobsBatch(db, [seniorRole, berlinIntern, remoteFresher, blrIntern], 'gh-test');
 
-  // Default queryJobs hides Staff/Senior roles and orders Bangalore -> Remote -> Global
+  // Default queryJobs hides Staff/Senior roles AND roles abroad; orders Bangalore -> Remote
   const defaultFeed = queryJobs(db, {});
-  assert.equal(defaultFeed.total, 3);
+  assert.equal(defaultFeed.total, 2);
   assert.equal(defaultFeed.jobs[0].company, 'Razorpay');
   assert.equal(defaultFeed.jobs[1].company, 'RemoteCo');
-  assert.equal(defaultFeed.jobs[2].company, 'EuroCo');
+
+  // Abroad roles are still reachable explicitly
+  const abroad = queryJobs(db, { locationPriority: 'global' });
+  assert.equal(abroad.total, 1);
+  assert.equal(abroad.jobs[0].company, 'EuroCo');
+  assert.equal(abroad.jobs[0].match_breakdown.locationTier, 'abroad');
+  const everywhere = queryJobs(db, { locationPriority: 'all' });
+  assert.equal(everywhere.total, 3);
+  // The Berlin intern must score well below the equivalent Bengaluru intern
+  assert.ok(abroad.jobs[0].match_score + 25 <= defaultFeed.jobs[0].match_score);
 
   // Explicit Bangalore filter works
   const blrOnly = queryJobs(db, { locationPriority: 'bangalore' });
   assert.equal(blrOnly.total, 1);
   assert.equal(blrOnly.jobs[0].company, 'Razorpay');
 
-  // Explicit seniority=all reveals Staff role too
+  // Explicit seniority=all reveals Staff role too (still excluding abroad)
   const allRoles = queryJobs(db, { seniority: 'all' });
-  assert.equal(allRoles.total, 4);
+  assert.equal(allRoles.total, 3);
 
-  // Every normalized job has an approximate stipend (listed or researched)
-  assert.ok(defaultFeed.jobs.every((j) => j.salary_min > 0 && j.salary_max >= j.salary_min));
-  const stripeBench = estimateStipendBenchmark({
-    title: 'Software Engineer, Intern',
-    company: 'Stripe',
-    location: 'Bengaluru',
-    workMode: 'onsite',
-    seniority: 'intern',
-    sourceType: 'greenhouse',
-  });
-  assert.equal(stripeBench.currency, 'INR');
-  assert.equal(stripeBench.estimated, true);
-  assert.ok(stripeBench.min >= 100000 * 12);
+  // No synthetic pay: jobs without a stated salary have none
+  assert.ok(defaultFeed.jobs.every((j) => j.salary_min === null && !j.is_salary_estimated));
 
-  // hasSalaryOnly filters strictly to explicitly listed pay (excluding researched estimates)
+  // hasSalaryOnly filters strictly to explicitly listed pay
   const listedJob = normalizeJobPayload({
     sourceId: 'gh-test',
     sourceType: 'greenhouse',
@@ -378,7 +391,6 @@ test('HTTP API: end-to-end server routes work properly', async () => {
 
     const detail = await fetch(`${baseUrl}/api/jobs/${job.id}`).then((r) => r.json());
     assert.equal(detail.job.id, job.id);
-    assert.ok(detail.tailoring.outreachNote.includes('Linear'));
 
     const patched = await fetch(`${baseUrl}/api/jobs/${job.id}`, {
       method: 'PATCH',
@@ -387,11 +399,8 @@ test('HTTP API: end-to-end server routes work properly', async () => {
     }).then((r) => r.json());
     assert.equal(patched.job.status, 'applied');
 
-    const analytics = await fetch(`${baseUrl}/api/analytics`).then((r) => r.json());
-    assert.equal(analytics.totalJobs, 1);
-
-    const research = await fetch(`${baseUrl}/api/research`).then((r) => r.json());
-    assert.ok(research.markdown.includes('Greenhouse'));
+    const skills = await fetch(`${baseUrl}/api/skills`).then((r) => r.json());
+    assert.ok(Array.isArray(skills.topSkills));
   } finally {
     await new Promise((resolve) => server.close(resolve));
     db.close();
@@ -413,8 +422,8 @@ test('Role discipline classification, tightened Associate seniority, Indiana/Ind
   assert.notEqual(riskOpsExp.seniority, 'junior');
 
   // Indianapolis / Indiana must never classify as India
-  assert.equal(classifyLocationTier('Indianapolis, IN', 'onsite'), 'global');
-  assert.equal(classifyLocationTier('Indiana', 'onsite'), 'global');
+  assert.equal(classifyLocationTier('Indianapolis, IN', 'onsite'), 'abroad');
+  assert.equal(classifyLocationTier('Indiana', 'onsite'), 'abroad');
 
   // New Rippling & Pinpoint fingerprinter signatures
   assert.deepEqual(detectAtsFromText('https://ats.rippling.com/rippling/jobs/abc-123'), {
@@ -470,11 +479,12 @@ test('Role discipline classification, tightened Associate seniority, Indiana/Ind
 
   // Default roleCategory='tech' excludes Payroll Trainee
   const techOnly = queryJobs(db, { roleCategory: 'tech' });
-  assert.equal(techOnly.total, 2);
+  assert.equal(techOnly.total, 1);
   assert.ok(techOnly.jobs.every((j) => j.title !== 'Payroll Industrial Trainee'));
+  assert.equal(queryJobs(db, { roleCategory: 'tech', locationPriority: 'all' }).total, 2);
 
   // roleCategory='all' includes all functions
-  const allFuncs = queryJobs(db, { roleCategory: 'all' });
+  const allFuncs = queryJobs(db, { roleCategory: 'all', locationPriority: 'all' });
   assert.equal(allFuncs.total, 3);
 
   // locationPriority='india' must include Bengaluru SWE intern and exclude Indianapolis
@@ -1014,11 +1024,16 @@ test('NLP additions: SDE-2 mid-level cue, eligibility penalty & batch filter, an
 
   const highPay = extractSalary('Stipend: ₹60,000/month in Bengaluru.');
   assert.equal(highPay.confidence, 'high');
-  const medPay = estimateStipendBenchmark({ title: 'Software Engineer Intern', company: 'Groww', location: 'Bengaluru, India', seniority: 'intern' });
-  assert.equal(medPay.confidence, 'med');
-  assert.ok(medPay.basis.includes('groww'));
-  const lowPay = estimateStipendBenchmark({ title: 'Software Engineer Intern', company: 'Stealth Startup', location: 'Bengaluru, India', seniority: 'intern', sourceType: 'workday' });
-  assert.equal(lowPay.confidence, 'low');
+  // Indian annual CTC in lakh notation
+  const ctc = extractSalary('Salary: ₹ 3,50,000 - 5,00,000 per year');
+  assert.equal(ctc.min, 350000);
+  assert.equal(ctc.max, 500000);
+  assert.equal(ctc.currency, 'INR');
+  assert.equal(extractSalary('We raised ₹ 50,00,000 in seed funding').min, null);
+
+  // Plus-less experience requirements
+  assert.equal(extractExperience('0 years of experience required', 'Full Stack Developer').seniority, 'junior');
+  assert.equal(extractExperience('Minimum 2 years of experience required', 'Backend Developer').min, 2);
 
   const job2026 = normalizeJobPayload({
     sourceId: 'gh-razorpay',
@@ -1030,7 +1045,7 @@ test('NLP additions: SDE-2 mid-level cue, eligibility penalty & batch filter, an
     descriptionText: 'Eligible for 2026 batch B.Tech CS/IT with 7.0+ CGPA. TypeScript, React, Node.js, PostgreSQL.',
     applyUrl: 'https://boards.greenhouse.io/groww/jobs/1',
   });
-  assert.equal(job2026.salary_confidence, 'med');
+  assert.equal(job2026.salary_confidence, 'none');
 
   const job2025 = normalizeJobPayload({
     sourceId: 'gh-razorpay',
@@ -1129,22 +1144,18 @@ test('Pagination covering index, includeStats=false slice, incremental upsert & 
         `EXPLAIN QUERY PLAN
          SELECT j.id FROM jobs j
          WHERE j.is_active = 1
+           AND (j.location_tier IN ('bangalore', 'india', 'remote', 'unknown'))
            AND COALESCE(json_extract(j.match_breakdown, '$.roleCategory'), 'tech') != 'non_tech'
            AND j.seniority IN ('intern', 'junior')
            AND j.status != 'dismissed'
          ORDER BY
-           CASE
-             WHEN (j.location LIKE '%Bangalore%' OR j.location LIKE '%Bengaluru%' OR j.location LIKE '%BLR%') THEN 1
-             WHEN (j.work_mode = 'remote' OR j.location LIKE '%Remote%' OR j.location LIKE '%Worldwide%' OR j.location LIKE '%Anywhere%') THEN 2
-             WHEN ((j.location LIKE '%India%' AND (j.location NOT LIKE '%Indiana%' AND j.location NOT LIKE '%Indianapolis%')) OR j.location LIKE '%Hyderabad%' OR j.location LIKE '%Pune%' OR j.location LIKE '%Mumbai%' OR j.location LIKE '%Gurgaon%' OR j.location LIKE '%Gurugram%' OR j.location LIKE '%Noida%' OR j.location LIKE '%Chennai%' OR j.location LIKE '%Delhi%' OR j.location LIKE '%Kolkata%') THEN 3
-             ELSE 4
-           END ASC,
+           CASE j.location_tier WHEN 'bangalore' THEN 1 WHEN 'remote' THEN 2 WHEN 'india' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END ASC,
            j.match_score DESC,
            COALESCE(j.posted_at, j.first_seen_at) DESC
          LIMIT 30 OFFSET 30`
       )
       .all();
-    assert.ok(plan.some((r) => String(r.detail).includes('USING COVERING INDEX idx_jobs_active_ranked')));
+    assert.ok(plan.some((r) => String(r.detail).includes('USING COVERING INDEX idx_jobs_feed')));
     assert.ok(!plan.some((r) => String(r.detail).includes('USE TEMP B-TREE FOR ORDER BY')));
 
     upsertJobsBatch(db, [jobs[0]], 'ashby-linear');
@@ -1176,4 +1187,139 @@ test('Pagination covering index, includeStats=false slice, incremental upsert & 
     await new Promise((resolve) => server.close(resolve));
     db.close();
   }
+});
+
+test('YC jobs: Inertia props, IN→India locations, INR salary, new-grad level, founder contacts', async () => {
+  const posting = {
+    id: 9001,
+    title: 'Software Engineer',
+    url: '/companies/acme/jobs/abc-software-engineer',
+    location: 'Bengaluru, KA, IN / Remote (IN)',
+    role: 'eng',
+    type: 'Full-time',
+    minExperience: 'Any (new grads ok)',
+    salaryRange: '₹1.8M - ₹3M INR',
+    skills: ['TypeScript', 'React'],
+    companyName: 'Acme',
+    companyBatchName: 'W24',
+    companyOneLiner: 'Payments for India',
+    companyUrl: '/companies/acme',
+    createdAt: '6 days',
+  };
+  const company = {
+    name: 'Acme',
+    location: 'Bengaluru, India',
+    founders: [{ full_name: 'Asha Rao', title: 'CEO', linkedin_url: 'https://www.linkedin.com/in/asha', is_active: true }],
+  };
+  const pageHtml = `<div id="app" data-page="${JSON.stringify({ props: { jobPostings: [posting] } }).replace(/"/g, '&quot;')}"></div>`;
+  assert.equal(parseYcPageProps(pageHtml).jobPostings[0].id, 9001);
+
+  assert.equal(normalizeYcLocation('San Francisco, CA, US / IN'), 'San Francisco, CA, US / India');
+  assert.equal(ycSalaryToText('₹1.8M - ₹3M INR'), 'Salary: ₹ 18,00,000 - 30,00,000 per year');
+
+  const job = mapYcPosting(posting, { id: 'agg-yc-jobs' }, company);
+  assert.equal(job.source_type, 'yc');
+  assert.equal(job.seniority, 'junior');
+  assert.equal(classifyLocationTier(job.location, job.work_mode, job.description_text), 'bangalore');
+  assert.equal(job.salary_min, 1800000);
+  assert.equal(job.salary_currency, 'INR');
+  assert.equal(job.apply_url, 'https://www.ycombinator.com/companies/acme/jobs/abc-software-engineer');
+  assert.ok(job.contacts.some((c) => c.name === 'Asha Rao' && c.kind === 'linkedin'));
+
+  // Non-engineering and years-old postings are dropped
+  assert.equal(mapYcPosting({ ...posting, role: 'sales' }, {}, company), null);
+  assert.equal(mapYcPosting({ ...posting, createdAt: 'over 2 years' }, {}, company), null);
+
+  // Scraper enriches from the company page (all roles + founders)
+  const fetchImpl = async (url) => {
+    const props = String(url).includes('/companies/acme')
+      ? { company, jobPostings: [posting, { ...posting, id: 9002, title: 'Backend Intern', type: 'Internship' }] }
+      : { jobPostings: [posting] };
+    const body = `<div data-page="${JSON.stringify({ props }).replace(/"/g, '&quot;')}"></div>`;
+    return new Response(body, { status: 200 });
+  };
+  const jobs = await scrapeYCJobs({ id: 'agg-yc-jobs' }, { fetchImpl, sleepImpl: async () => {} });
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs.find((j) => j.external_id === '9002').seniority, 'intern');
+  assert.ok(jobs.every((j) => j.contacts.some((c) => c.name === 'Asha Rao')));
+});
+
+test('HN contacts: poster profile + de-obfuscated hiring emails', () => {
+  const contacts = extractHnContacts({ author: 'founder_jane' }, 'Acme | Backend Engineer | Remote. Email jobs [at] acme [dot] io or hi@acme.dev');
+  assert.ok(contacts.some((c) => c.url === 'mailto:jobs@acme.io'));
+  assert.ok(contacts.some((c) => c.url === 'mailto:hi@acme.dev'));
+  assert.ok(contacts.some((c) => c.kind === 'hn' && c.name === 'founder_jane'));
+});
+
+test('Cutshort: sitemap recency/slug filter and JobPosting JSON-LD mapping', () => {
+  const now = Date.parse('2026-11-22T12:00:00Z');
+  const xml = `<urlset>
+    <url> <loc>https://cutshort.io/job/React-Developer-Bengaluru-Acme-AbC123</loc> <lastmod>2026-11-21T10:00:00Z</lastmod> </url>
+    <url> <loc>https://cutshort.io/job/Senior-Backend-Engineer-Acme-Old111</loc> <lastmod>2026-11-21T10:00:00Z</lastmod> </url>
+    <url> <loc>https://cutshort.io/job/Sales-Executive-Acme-Sal999</loc> <lastmod>2026-11-21T10:00:00Z</lastmod> </url>
+    <url> <loc>https://cutshort.io/job/Python-Developer-Acme-Stale42</loc> <lastmod>2026-10-01T10:00:00Z</lastmod> </url>
+  </urlset>`;
+  const entries = parseCutshortSitemap(xml);
+  assert.equal(entries.length, 4);
+  assert.equal(entries[0].externalId, 'AbC123');
+  const picked = selectCutshortCandidates(entries, { maxAgeDays: 3, now });
+  assert.deepEqual(picked.map((e) => e.externalId), ['AbC123']);
+
+  const jsonLd = {
+    '@context': 'https://schema.org/',
+    '@type': 'JobPosting',
+    title: 'React Developer',
+    description: '<p>Build React apps with TypeScript.</p>',
+    datePosted: '2026-11-21T10:00:00Z',
+    employmentType: ['FULL_TIME'],
+    // Real pages use nested/array shapes here — these must be flattened to strings for SQLite
+    hiringOrganization: { '@type': 'Organization', name: 'Acme Labs', logo: { '@type': 'ImageObject', url: 'https://cdn.example/logo.png' }, sameAs: ['https://acme.dev'] },
+    jobLocation: { '@type': 'Place', address: { addressLocality: 'Bengaluru', addressCountry: 'IN' } },
+    experienceRequirements: { '@type': 'OccupationalExperienceRequirements', monthsOfExperience: 12 },
+    baseSalary: { '@type': 'MonetaryAmount', currency: 'INR', value: { '@type': 'QuantitativeValue', minValue: 400000, maxValue: 700000 } },
+    skills: 'React, TypeScript',
+  };
+  const html = `<html><script type="application/ld+json">${JSON.stringify(jsonLd)}</script></html>`;
+  const job = parseCutshortJobPage(html, picked[0], { id: 'india-cutshort' });
+  assert.equal(job.company, 'Acme Labs');
+  assert.equal(job.company_logo, 'https://cdn.example/logo.png');
+  assert.equal(job.company_url, 'https://acme.dev');
+  assert.equal(job.location, 'Bengaluru, India');
+  assert.equal(job.seniority, 'junior');
+  assert.equal(job.experience_min, 1);
+  assert.equal(job.salary_min, 400000);
+  assert.equal(job.salary_max, 700000);
+  assert.ok(job.skills.includes('React'));
+  assert.equal(parseCutshortJobPage('<html>no data</html>', picked[0]), null);
+});
+
+test('Startups lane ignores location but keeps a 3+ yrs bar; unstated level is a "maybe", not "mid"', () => {
+  // Generic title, no stated experience → unknown (not an assumed mid)
+  assert.equal(extractExperience('Build our product end to end.', 'Software Engineer').seniority, 'unknown');
+
+  const db = initDb(':memory:');
+  const mk = (id, title, location, desc, sourceType = 'yc') =>
+    normalizeJobPayload({ sourceId: 'agg-yc-jobs', sourceType, externalId: id, title, company: `Co-${id}`, location, descriptionText: desc, applyUrl: `https://example.com/${id}` });
+  upsertJobsBatch(
+    db,
+    [
+      mk('sf', 'Software Engineer', 'San Francisco, CA', 'Open to new grads. 0 years of experience required. React.'),
+      mk('blr', 'Backend Engineer', 'Bengaluru, India', 'Python, PostgreSQL.'),
+      mk('sr', 'Platform Engineer', 'Bengaluru, India', '5+ years of experience required.'),
+      mk('gh', 'Software Engineer', 'Bengaluru, India', 'TypeScript.', 'greenhouse'),
+    ],
+    'agg-yc-jobs'
+  );
+
+  const lane = queryJobs(db, { lane: 'startups', includeStats: false });
+  const ids = lane.jobs.map((j) => j.external_id);
+  assert.deepEqual(ids.sort(), ['blr', 'sf']);
+  // Bengaluru ranks ahead of the San Francisco role
+  assert.equal(lane.jobs[0].external_id, 'blr');
+
+  // Default feed: unstated level hidden; the "maybe" scope reveals it
+  assert.equal(queryJobs(db, { includeStats: false }).total, 0);
+  const maybe = queryJobs(db, { seniority: 'intern,junior,unknown', includeStats: false });
+  assert.deepEqual(maybe.jobs.map((j) => j.external_id).sort(), ['blr', 'gh']);
+  db.close();
 });

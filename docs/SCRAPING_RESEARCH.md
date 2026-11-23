@@ -114,3 +114,27 @@ Scraping raw feeds is only half the battle. A world-class job board turns raw pa
    - Extract years of experience (`3-5 years`), seniority level (`Intern` -> `Executive`), work mode (`Remote`, `Hybrid`, `Onsite`), visa sponsorship signals, and green/red flags.
 4. **Multi-Dimensional Profile Scoring (0–100)**:
    - Weighted scoring across **Role/Title Alignment**, **Skills Overlap**, **Work Mode & Location**, **Salary Fit**, and **Experience Alignment**, with instant re-scoring whenever your profile or resume changes.
+
+---
+
+## 5. What Actually Works for an India-Based Fresher (Nov 2026 audit)
+
+Measured on this project's own 36k-job database rather than assumed:
+
+| Source | Active jobs | India-reachable intern/fresher roles |
+| :--- | ---: | ---: |
+| Internshala | 218 | 214 |
+| LinkedIn guest search | 340 | 152 |
+| All Greenhouse boards (84) | 13,818 | 23 |
+| All Ashby boards (54) | 4,720 | 10 |
+| Instahyre (old unfiltered query) | 554 | 7 → **160** after using real filters |
+| Arbeitnow (EU) | 4,034 | 1 (retired) |
+
+Takeaways:
+
+1. **Geography is the dominant filter.** ~85% of the DB was outside India or "remote but US/EU-only". Treating `Remote (USA)` as remote put Portland/Dallas/Berlin roles at the top of a Bengaluru fresher's feed. Remote must be split into *open to India* vs *country-locked*.
+2. **Indian boards beat direct ATS for this persona.** Products like HiringCafe win on direct ATS crawling — but most Indian product companies (Swiggy, Zomato, Flipkart, PhonePe, Freshworks, Zoho, Postman, BrowserStack…) are *not* on Greenhouse/Lever/Ashby (they use Darwinbox, Keka, SuccessFactors or custom portals). A slug probe of ~110 Indian companies found only a handful (Tekion, Sigmoid, MindTickle, FamPay, Commvault, Atlan, plus the existing Razorpay/Groww/Meesho/Paytm/CRED/Hevo).
+3. **Use the board's own filters.** Instahyre's `experience=0` parameter is silently ignored; `experience_level=entry_level` + `job_functions` (max 3 per request) is what works. Internshala renamed its fresher-jobs URL; the old one returned zero cards. Fetching the firehose and filtering locally wastes requests and misses most relevant rows.
+4. **Speed matters, modestly.** Hiring.cafe crawls ~2×/day and removes jobs when the source removes them. Evidence that early applicants do better is consistent in direction (St. Louis Fed: 41% of applications arrive within 48h) though vendor multipliers ("8× more interviews") are unreliable. A "new since last look" view is worth more than any scoring nuance.
+5. **Don't invent data.** The previous build filled 64% of jobs with benchmark "stipend estimates"; for a fresher deciding where to apply these are worse than nothing. Only stated pay is stored.
+6. **Naukri** has no public API; its private search API requires app-identity headers. Its job-alert emails (and LinkedIn's) can be imported via `POST /api/import/eml`, and the browser extension can save any page.

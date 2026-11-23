@@ -1,44 +1,42 @@
-# Jobby — Autonomous Multi-Source Job Board & Profile Match Engine
+# Jobby — Personal Fresher SDE Job Board (India)
 
-Jobby is a local-first, zero-dependency Node.js job aggregator, continuous multi-tier scraper, NLP job intelligence parser, 100-point profile match engine, resume tailoring assistant, and application CRM pipeline.
+Jobby is a local-first, zero-dependency Node.js job aggregator tuned for one person: a final-year CS student in India looking for intern / fresher SDE roles (frontend, backend, full-stack) in Bengaluru, elsewhere in India, or remote roles that are genuinely open to India.
 
-## Why Jobby Exists
+It continuously pulls jobs, throws away what you can't apply to, ranks the rest, and lets you track what you've applied to.
 
-Instead of clicking through fragmented job boards full of duplicate listings and stale ghost jobs, Jobby runs continuously on your machine and pulls directly from:
+## Where jobs come from
 
-1. **Tier 1 — Direct ATS Public JSON APIs** (Greenhouse, Ashby HQ, Lever, SmartRecruiters, Workable, Recruitee) across 55+ top tech & AI companies (Stripe, Anthropic, OpenAI, Linear, Vercel, Figma, Databricks, Ramp, Perplexity, Supabase, Cloudflare, Palantir, and more).
-2. **Tier 2 — Startup & Founder Community Feeds** (Hacker News monthly *"Who is Hiring?"* thread + YC Jobs via Algolia API).
-3. **Tier 3 — Open Global & Remote Job Boards** (Remotive, Arbeitnow, RemoteOK, The Muse, Himalayas, Jobicy, WeWorkRemotely RSS).
-4. **Tier 4 — Universal Career Page Auto-Fingerprinter** (Paste any company career URL to auto-detect its ATS or extract Schema.org `JobPosting` JSON-LD).
+Ranked by how many India-reachable fresher roles each actually produces (measured on real data, Nov 2026):
 
-See [docs/SCRAPING_RESEARCH.md](docs/SCRAPING_RESEARCH.md) for the complete technical deep-dive into how modern job aggregators scrape and normalize openings.
+1. **Indian boards** — Internshala (internship + fresher job category pages, with stipend/CTC), Instahyre (entry-level + internship API filtered to SWE functions), LinkedIn guest search (fresher/SDE-1 keywords, India, last 24h, rate-capped), Cutshort (sitemap + JSON-LD job pages). These produce the large majority of relevant roles.
+2. **Direct ATS APIs** — Greenhouse, Ashby, Lever, SmartRecruiters, Workday, Oracle HCM, Rippling, etc. for ~240 companies, including India-heavy boards (Razorpay, Groww, Meesho, Paytm, CRED, Hevo, Tekion, Sigmoid, MindTickle, FamPay…). Fresh and authoritative, but most global companies hire few freshers in India.
+3. **Startup feeds** — ycombinator.com/jobs (incl. company pages with founders' LinkedIn) and the full monthly HN "Who is hiring" thread (with hiring emails). These power the **Startups** tab.
+4. **Remote boards** — RemoteOK, Himalayas, Jobicy, WWR, Remotive, Simplify lists. Only the remote-worldwide/APAC/India rows survive the filter.
+5. **Manual inputs** — paste a career-page URL (ATS fingerprint / JSON-LD), import job-alert emails (`.eml`/mbox — the practical way to get Naukri/LinkedIn alerts in), or save from any page with the browser extension.
 
----
+Auto-discovery mines ATS links out of India-reachable postings and only promotes a board if it lists at least one role you could apply to.
+
+## What it does with them
+
+- **Location eligibility** — every job gets a tier: `bangalore`, `india`, `remote` (open to India), `remote_restricted` ("Remote – US"), `abroad`, `unknown`. The feed shows only the reachable ones by default; "Abroad" is one click away.
+- **Seniority & role filtering** — intern/junior and tech roles by default; parses "0–1 years", "SDE 1", "fresher", batch/CGPA eligibility.
+- **Ranking** — explainable 100-point match (title, skills, location, pay, experience) with small tie-breaker bonuses, so scores spread out instead of piling up at 100.
+- **Only real pay** — salary/stipend is shown only when the posting states it (incl. ₹ monthly stipends, LPA, and lakh-format CTC). No synthetic estimates.
+- **Fresh Drops** — newest discoveries first; applying in the first few days matters.
+- **Startups** — YC / HN roles shown regardless of listed location (India first), with founder / poster contacts for direct outreach.
+- **"+ Maybe"** — roles that never state an experience level are kept as `unknown` instead of assumed mid-level; one click adds them to the feed.
+- **Tracking** — save / applied / interview / dismissed with notes, so you never re-apply or re-read.
 
 ## Quick Start
 
-Requires **Node.js >= 22** (uses built-in `node:sqlite` with FTS5, native `fetch`, and `node:http` — zero `npm install` needed).
+Requires **Node.js >= 22** (built-in `node:sqlite`, `fetch`, `node:http` — no `npm install`).
 
 ```bash
-# 1. Start the Jobby server & continuous background scheduler
-npm start
-
-# 2. Or run a one-shot scrape across all enabled sources from the CLI
-npm run scrape
-
-# 3. Run the automated test suite
+npm start            # server + background scheduler at http://localhost:3456
+npm run scrape       # one-shot scrape of all enabled sources
 npm test
 ```
 
-Open **http://localhost:3456** in your browser.
+On first start after an upgrade, stored jobs are re-classified once (≈30 s on a 35k-job DB).
 
----
-
-## Key Features
-
-- **Real-Time Continuous Scraping Daemon**: Configurable interval scheduler (15m / 30m / 60m / 6h) with live Server-Sent Events (SSE) progress streaming in the UI.
-- **SQLite + FTS5 Full-Text Search**: Sub-millisecond faceted filtering across thousands of jobs by keyword, match score, work mode, seniority, salary, ATS source, and skills.
-- **130+ Skill Taxonomy & Deep NLP Extraction**: Extracts skills, normalized annual salary ranges, years of experience, seniority tier, work mode, visa sponsorship signals, and green/red flags from raw HTML descriptions.
-- **Explainable 100-Point Profile Matching**: Scores every job across Title Alignment, Primary/Secondary Skills, Work Mode & Location, Compensation, and Experience with customizable weights.
-- **1-Click Resume Parser & Job Tailoring Kit**: Paste your resume to auto-configure your profile, and get job-specific ATS keywords, gap analysis, tailored resume bullets, and cold outreach / cover letter drafts for any opening.
-- **Application CRM Kanban**: Track openings through `Saved → Applied → Screen → Interview → Offer / Rejected` with persistent notes.
+See [docs/SCRAPING_RESEARCH.md](docs/SCRAPING_RESEARCH.md) for the research behind the source mix.

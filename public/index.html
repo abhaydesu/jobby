@@ -41,6 +41,9 @@
             <button class="nav-tab" data-tab="fresh" role="tab">
               Fresh Drops <span class="nav-badge mono" id="badge-fresh">0</span>
             </button>
+            <button class="nav-tab" data-tab="startups" role="tab">
+              Startups <span class="nav-badge mono" id="badge-startups">0</span>
+            </button>
             <button class="nav-tab" data-tab="crm" role="tab">
               Pipeline <span class="nav-badge mono" id="badge-crm">0</span>
             </button>
@@ -48,8 +51,6 @@
               Scrapers <span class="nav-badge mono" id="badge-sources">0</span>
             </button>
             <button class="nav-tab" data-tab="profile" role="tab">Profile</button>
-            <button class="nav-tab" data-tab="analytics" role="tab">Analytics</button>
-            <button class="nav-tab" data-tab="research" role="tab">Architecture</button>
           </nav>
         </div>
 
@@ -138,17 +139,18 @@
                 <button class="seg-btn active" data-seniority="intern,junior">Intern &amp; Fresher</button>
                 <button class="seg-btn" data-seniority="intern">Internships</button>
                 <button class="seg-btn" data-seniority="junior">New Grad / SDE-1</button>
+                <button class="seg-btn" data-seniority="intern,junior,unknown" title="Also include roles that never state an experience level">+ Maybe</button>
                 <button class="seg-btn" data-seniority="all">All Levels</button>
               </div>
             </div>
             <div class="control-cluster">
               <span class="cluster-label">Location</span>
               <div class="segmented-bar" id="bento-loc-priority">
-                <button class="seg-btn active" data-loc="">Priority Order</button>
+                <button class="seg-btn active" data-loc="" title="Bengaluru, India and remote roles open to India">Reachable</button>
                 <button class="seg-btn" data-loc="bangalore">Bengaluru</button>
                 <button class="seg-btn" data-loc="remote">Remote</button>
                 <button class="seg-btn" data-loc="india">India Hubs</button>
-                <button class="seg-btn" data-loc="global">Global</button>
+                <button class="seg-btn" data-loc="global" title="Onsite abroad, or remote locked to another country">Abroad</button>
               </div>
             </div>
           </div>
@@ -240,6 +242,8 @@
                     <option value="intern,junior" selected>Intern &amp; Fresher</option>
                     <option value="intern">Internships Only</option>
                     <option value="junior">New Grad / SDE-1</option>
+                    <option value="intern,junior,unknown">Intern, Fresher &amp; Unstated (Maybe)</option>
+                    <option value="unknown">Unstated Level Only (Maybe)</option>
                     <option value="mid">Mid-Level</option>
                     <option value="senior">Senior</option>
                     <option value="all">All Levels</option>
@@ -366,6 +370,35 @@
         </div>
 
         <div class="jobs-stack" id="fresh-jobs-list"></div>
+      </section>
+
+      <section class="tab-panel" id="panel-startups">
+        <div class="section-head">
+          <div>
+            <h2>Startups — Reach the Founders</h2>
+            <p>YC and HN "Who is hiring" roles regardless of listed location, with founder / poster contacts. Early-stage teams are often flexible on location and experience if you reach out directly.</p>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="btn-refresh-startups">Refresh</button>
+          </div>
+        </div>
+
+        <div class="fresh-toolbar">
+          <div class="btn-row">
+            <div class="segmented-bar" id="startups-loc-seg">
+              <button class="seg-btn active" data-loc="" type="button">Everywhere</button>
+              <button class="seg-btn" data-loc="india" type="button">India</button>
+              <button class="seg-btn" data-loc="remote" type="button">Remote (open)</button>
+            </div>
+            <label class="check-row">
+              <input type="checkbox" id="startups-untriaged-only" checked />
+              <span>Untriaged only</span>
+            </label>
+          </div>
+          <div class="feed-count mono" id="startups-count-text">Loading startup roles...</div>
+        </div>
+
+        <div class="jobs-stack" id="startups-jobs-list"></div>
       </section>
 
       <section class="tab-panel" id="panel-crm">
@@ -644,26 +677,6 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="panel-analytics">
-        <div class="section-head">
-          <div>
-            <h2>Market Analytics</h2>
-            <p>Live distributions across all active postings indexed in SQLite.</p>
-          </div>
-          <button class="btn btn-secondary" id="btn-refresh-analytics">Refresh</button>
-        </div>
-        <div class="analytics-grid" id="analytics-grid"></div>
-      </section>
-
-      <section class="tab-panel" id="panel-research">
-        <div class="section-head">
-          <div>
-            <h2>Ingestion Architecture &amp; Research</h2>
-            <p>Technical breakdown of ATS public JSON APIs, career page fingerprinting, and deduplication.</p>
-          </div>
-        </div>
-        <div class="panel-box research-card" id="research-content">Loading architecture documentation...</div>
-      </section>
     </main>
   </div>
 
@@ -707,23 +720,19 @@
       </div>
       <div class="drawer-tabs">
         <button class="drawer-tab active" data-dtab="overview">Match &amp; Description</button>
-        <button class="drawer-tab" data-dtab="tailor">Tailoring &amp; Outreach</button>
         <button class="drawer-tab" data-dtab="notes">Notes</button>
       </div>
     </div>
 
     <div class="drawer-body">
       <div class="drawer-subpanel active" id="dpanel-overview">
+        <div class="contacts-box" id="d-contacts"></div>
         <div class="match-panel" id="d-match-panel"></div>
         <div class="skills-compare" id="d-skills-compare"></div>
         <div class="flags-row" id="d-flags-row"></div>
         <div class="divider"></div>
         <h3 class="sub-heading">Role Description</h3>
         <div class="job-description-html" id="d-description"></div>
-      </div>
-
-      <div class="drawer-subpanel" id="dpanel-tailor">
-        <div id="d-tailor-content"></div>
       </div>
 
       <div class="drawer-subpanel" id="dpanel-notes">

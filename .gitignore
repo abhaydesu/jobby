@@ -7,3 +7,6 @@ data/
 *token*
 .DS_Store
 node_modules/
+
+# local progress notes
+PROGRESS.md

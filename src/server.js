@@ -10,16 +10,18 @@ import {
   queryJobs,
   getJobById,
   updateJobStatus,
-  getAnalytics,
   getSourcesHealth,
+  getTopSkills,
   getSourceCandidates,
   updateSourceCandidateStatus,
   buildConfigForAts,
   getSetting,
+  setSetting,
+  CLASSIFIER_VERSION,
   upsertJobsBatch,
   syncFresherProfileAndReclassify,
 } from './db.js';
-import { parseResumeText, generateJobTailoring } from './matcher.js';
+import { parseResumeText } from './matcher.js';
 import { seedDefaultSources, hydrateSourceRow } from './scrapers/index.js';
 import { normalizeJobPayload } from './scrapers/normalize.js';
 import { discoverCareerPage } from './scrapers/fingerprinter.js';
@@ -30,7 +32,6 @@ import { ScrapeScheduler } from './scheduler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
-const RESEARCH_DOC_PATH = path.join(ROOT_DIR, 'docs', 'SCRAPING_RESEARCH.md');
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -103,11 +104,9 @@ async function readJsonBody(req) {
 export function createApp({ dbPath } = {}) {
   const db = initDb(dbPath);
   seedDefaultSources(db);
-  const needsUpgrade = db
-    .prepare("SELECT COUNT(*) AS c FROM jobs WHERE is_active = 1 AND (match_breakdown NOT LIKE '%locationTier%' OR match_breakdown NOT LIKE '%roleCategory%' OR salary_min IS NULL)")
-    .get();
-  if ((needsUpgrade?.c ?? 0) > 0) {
+  if (getSetting(db, 'classifier_version') !== CLASSIFIER_VERSION) {
     syncFresherProfileAndReclassify(db);
+    setSetting(db, 'classifier_version', CLASSIFIER_VERSION);
   }
   const scheduler = new ScrapeScheduler(db);
   const sseClients = new Set();
@@ -151,7 +150,8 @@ export function createApp({ dbPath } = {}) {
           q: sp.get('q') || '',
           minScore: Number(sp.get('minScore') || 0),
           workMode: sp.get('workMode') || '',
-          seniority: sp.get('seniority') ?? 'intern,junior',
+          seniority: sp.get('seniority') ?? '',
+          lane: sp.get('lane') || '',
           roleCategory: sp.get('roleCategory') ?? 'tech',
           batch: sp.get('batch') || '',
           locationPriority: sp.get('locationPriority') || '',
@@ -175,16 +175,14 @@ export function createApp({ dbPath } = {}) {
         return sendJson(res, 200, result);
       }
 
-      // Single Job Detail + Live Tailoring Kit
+      // Single Job Detail
       const jobMatch = /^\/api\/jobs\/([^/]+)$/.exec(pathname);
       if (jobMatch) {
         const jobId = decodeURIComponent(jobMatch[1]);
         if (method === 'GET') {
           const job = getJobById(db, jobId);
           if (!job) return sendJson(res, 404, { error: 'Job not found' });
-          const profile = getProfile(db);
-          const tailoring = generateJobTailoring(job, profile);
-          return sendJson(res, 200, { job, tailoring });
+          return sendJson(res, 200, { job });
         }
         if (method === 'PATCH') {
           const body = await readJsonBody(req);
@@ -586,14 +584,8 @@ export function createApp({ dbPath } = {}) {
         return sendJson(res, 200, cfg);
       }
 
-      // Analytics & Research Endpoints
-      if (method === 'GET' && pathname === '/api/analytics') {
-        return sendJson(res, 200, getAnalytics(db));
-      }
-
-      if (method === 'GET' && pathname === '/api/research') {
-        const content = fs.existsSync(RESEARCH_DOC_PATH) ? fs.readFileSync(RESEARCH_DOC_PATH, 'utf8') : '';
-        return sendJson(res, 200, { markdown: content });
+      if (method === 'GET' && pathname === '/api/skills') {
+        return sendJson(res, 200, { topSkills: getTopSkills(db) });
       }
 
       if (method === 'GET' && pathname === '/api/health') {

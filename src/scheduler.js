@@ -162,7 +162,10 @@ export class ScrapeScheduler extends EventEmitter {
       });
 
       const activeJobs = this.db
-        .prepare('SELECT source_id, source_type, company, apply_url, company_url, description_text FROM jobs WHERE is_active = 1')
+        .prepare(
+          // Mine ATS links only from India-reachable postings so discovery finds employers that hire here
+          "SELECT source_id, source_type, company, apply_url, company_url, description_text FROM jobs WHERE is_active = 1 AND location_tier IN ('bangalore', 'india', 'remote')"
+        )
         .all();
       scanJobsForAtsCandidates(this.db, activeJobs, label);
       const promoted = await verifyPendingCandidates(this.db, { limit: 3 }).catch(() => []);

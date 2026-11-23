@@ -4,21 +4,25 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { scoreJobAgainstProfile } from './matcher.js';
-import { extractExperience, extractWorkMode, extractSalary, estimateStipendBenchmark } from './nlp.js';
+import { extractExperience, extractWorkMode, extractSalary } from './nlp.js';
 import { canonicalizeApplyUrl } from './scrapers/normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.resolve(__dirname, '..', 'data', 'jobby.db');
 
-const BLR_COND_SQL = "(location LIKE '%Bangalore%' OR location LIKE '%Bengaluru%' OR location LIKE '%BLR%')";
-const REMOTE_COND_SQL = "(work_mode = 'remote' OR location LIKE '%Remote%' OR location LIKE '%Worldwide%' OR location LIKE '%Anywhere%')";
-const INDIA_GUARD_SQL = "(location NOT LIKE '%Indiana%' AND location NOT LIKE '%Indianapolis%')";
-const INDIA_COND_SQL = `((location LIKE '%India%' AND ${INDIA_GUARD_SQL}) OR location LIKE '%Hyderabad%' OR location LIKE '%Pune%' OR location LIKE '%Mumbai%' OR location LIKE '%Gurgaon%' OR location LIKE '%Gurugram%' OR location LIKE '%Noida%' OR location LIKE '%Chennai%' OR location LIKE '%Delhi%' OR location LIKE '%Kolkata%')`;
-const PRIORITY_ORDER_SQL = `CASE WHEN ${BLR_COND_SQL} THEN 1 WHEN ${REMOTE_COND_SQL} THEN 2 WHEN ${INDIA_COND_SQL} THEN 3 ELSE 4 END`;
+const BLR_COND_SQL = "(location_tier = 'bangalore')";
+const REMOTE_COND_SQL = "(location_tier = 'remote')";
+const INDIA_COND_SQL = "(location_tier = 'india')";
+const ELIGIBLE_COND_SQL = "(location_tier IN ('bangalore', 'india', 'remote', 'unknown'))";
+const PRIORITY_ORDER_SQL = "CASE location_tier WHEN 'bangalore' THEN 1 WHEN 'remote' THEN 2 WHEN 'india' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END";
+// Bump whenever NLP/scoring logic changes so stored rows are re-derived on next startup.
+export const CLASSIFIER_VERSION = '2026-11-geo-v2';
+// Early-stage startup feeds: founders are often reachable directly and flexible on location/experience
+export const STARTUP_SOURCE_TYPES = ['yc', 'hackernews'];
 const ROLE_CATEGORY_SQL = "COALESCE(json_extract(match_breakdown, '$.roleCategory'), 'tech')";
 
 function aliasJobsSql(expr) {
-  return expr.replace(/\b(location|work_mode|match_breakdown)\b/g, 'j.$1');
+  return expr.replace(/\b(location_tier|location|work_mode|match_breakdown)\b/g, 'j.$1');
 }
 
 function safeJsonParse(str, fallback) {
@@ -206,24 +210,38 @@ export function initDb(dbPath = process.env.JOBBY_DB_PATH || DEFAULT_DB_PATH) {
     db.exec("ALTER TABLE jobs ADD COLUMN canonical_url TEXT DEFAULT ''");
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url)');
+  if (!jobCols.includes('contacts')) {
+    db.exec("ALTER TABLE jobs ADD COLUMN contacts TEXT NOT NULL DEFAULT '[]'");
+  }
+  // Geographic eligibility tier, mirrored out of match_breakdown by triggers so every write path
+  // stays consistent. A real (not generated) column so the feed index can be fully covering.
+  if (!jobCols.includes('location_tier')) {
+    db.exec("ALTER TABLE jobs ADD COLUMN location_tier TEXT NOT NULL DEFAULT 'unknown'");
+    db.exec("UPDATE jobs SET location_tier = COALESCE(json_extract(match_breakdown, '$.locationTier'), 'unknown')");
+  }
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_jobs_active_ranked ON jobs(
+    CREATE TRIGGER IF NOT EXISTS trg_jobs_location_tier_ins AFTER INSERT ON jobs BEGIN
+      UPDATE jobs SET location_tier = COALESCE(json_extract(NEW.match_breakdown, '$.locationTier'), 'unknown') WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_jobs_location_tier_upd AFTER UPDATE OF match_breakdown ON jobs BEGIN
+      UPDATE jobs SET location_tier = COALESCE(json_extract(NEW.match_breakdown, '$.locationTier'), 'unknown') WHERE id = NEW.id;
+    END;
+  `);
+  db.exec(`
+    DROP INDEX IF EXISTS idx_jobs_active_ranked;
+    CREATE INDEX IF NOT EXISTS idx_jobs_feed ON jobs(
       is_active,
       ${PRIORITY_ORDER_SQL} ASC,
       match_score DESC,
       COALESCE(posted_at, first_seen_at) DESC,
+      location_tier,
       seniority,
       status,
       ${ROLE_CATEGORY_SQL},
       source_type,
       first_seen_at,
       work_mode,
-      location,
       source_id,
-      is_salary_estimated,
-      salary_min,
-      salary_max,
-      visa_sponsorship,
       id
     ) WHERE is_active = 1;
     CREATE INDEX IF NOT EXISTS idx_jobs_stale ON jobs(is_active, status, last_seen_at)
@@ -666,6 +684,9 @@ export function syncFresherProfileAndReclassify(db) {
   try {
     for (const row of rows) {
       const exp = extractExperience(row.description_text || '', row.title || '');
+      // Keep source-provided levels (Internshala/Instahyre/YC "new grads ok") when the text alone is silent
+      const seniority =
+        exp.seniority === 'unknown' && (row.seniority === 'intern' || row.seniority === 'junior') ? row.seniority : exp.seniority;
       const cleanLoc =
         (row.location || '').length > 85
           ? `${row.location.split(/\.\s+|\n/)[0].slice(0, 82).trim()}`
@@ -683,18 +704,8 @@ export function syncFresherProfileAndReclassify(db) {
           estimated: false,
         };
       } else {
-        const extracted = extractSalary(row.description_text || '');
-        sal =
-          extracted.min !== null
-            ? extracted
-            : estimateStipendBenchmark({
-                title: row.title || '',
-                company: row.company || '',
-                location: cleanLoc || '',
-                workMode,
-                seniority: exp.seniority,
-                sourceType: row.source_type || '',
-              });
+        // Only ever store pay that the posting itself states — no synthetic estimates
+        sal = extractSalary(row.description_text || '');
       }
 
       const jobObj = {
@@ -702,7 +713,7 @@ export function syncFresherProfileAndReclassify(db) {
         department: row.department || '',
         location: cleanLoc,
         work_mode: workMode,
-        seniority: exp.seniority,
+        seniority,
         experience_min: exp.min,
         experience_max: exp.max,
         salary_min: sal.min,
@@ -718,7 +729,7 @@ export function syncFresherProfileAndReclassify(db) {
       };
       const scored = scoreJobAgainstProfile(jobObj, profile);
       updateStmt.run(
-        exp.seniority,
+        seniority,
         exp.min,
         exp.max,
         workMode,
@@ -783,6 +794,7 @@ export function hydrateJobRow(row, includeDescription = false) {
     user_notes: row.user_notes || '',
     applied_at: row.applied_at,
     also_on: Array.isArray(row.also_on) ? row.also_on : [],
+    contacts: safeJsonParse(row.contacts, []),
   };
   if (includeDescription) {
     out.description_html = row.description_html || '';
@@ -829,6 +841,7 @@ const TIER2_SOURCE_TYPES = new Set([
   'yc',
   'internshala',
   'instahyre',
+  'cutshort',
   'email_import',
   'linkedin_email',
   'naukri_email',
@@ -856,6 +869,7 @@ const SOURCE_LABEL_MAP = {
   internshala: 'Internshala',
   internshala_email: 'Internshala',
   cutshort_ext: 'Cutshort',
+  cutshort: 'Cutshort',
   remotive: 'Remotive',
   arbeitnow: 'Arbeitnow',
   remoteok: 'RemoteOK',
@@ -936,10 +950,10 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
   const srcMeta = sourceId ? db.prepare('SELECT tier, type FROM sources WHERE id = ?').get(sourceId) : null;
 
   const findExistingByHash = db.prepare(
-    'SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, LENGTH(description_text) AS desc_len FROM jobs WHERE dedupe_hash = ? OR id = ?'
+    'SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, contacts, LENGTH(description_text) AS desc_len FROM jobs WHERE dedupe_hash = ? OR id = ?'
   );
   const findExistingByCanonical = db.prepare(
-    "SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, LENGTH(description_text) AS desc_len FROM jobs WHERE canonical_url = ? AND canonical_url != '' LIMIT 1"
+    "SELECT id, source_id, source_type, apply_url, last_seen_at, status, user_notes, applied_at, first_seen_at, title, location, work_mode, seniority, salary_min, salary_max, match_score, contacts, LENGTH(description_text) AS desc_len FROM jobs WHERE canonical_url = ? AND canonical_url != '' LIMIT 1"
   );
   const insertJob = db.prepare(`
     INSERT INTO jobs (
@@ -948,8 +962,8 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
       salary_min, salary_max, salary_currency, salary_period, salary_raw, is_salary_estimated,
       description_html, description_text, skills, green_flags, red_flags, visa_sponsorship,
       apply_url, company_url, posted_at, first_seen_at, last_seen_at, is_active,
-      match_score, match_breakdown, status, user_notes, applied_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'new', '', NULL)
+      match_score, match_breakdown, status, user_notes, applied_at, contacts
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'new', '', NULL, ?)
   `);
   const updateJob = db.prepare(`
     UPDATE jobs SET
@@ -960,7 +974,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
       salary_currency = ?, salary_period = ?, salary_raw = ?, is_salary_estimated = ?,
       description_html = ?, description_text = ?, skills = ?, green_flags = ?, red_flags = ?,
       visa_sponsorship = ?, apply_url = ?, company_url = ?, posted_at = COALESCE(?, posted_at),
-      last_seen_at = ?, is_active = 1, match_score = ?, match_breakdown = ?
+      last_seen_at = ?, is_active = 1, match_score = ?, match_breakdown = ?, contacts = ?
     WHERE id = ?
   `);
   const touchExistingJob = db.prepare('UPDATE jobs SET last_seen_at = ?, is_active = 1 WHERE id = ?');
@@ -988,6 +1002,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
       seenJobIds.add(existing ? existing.id : j.id);
       const skillsJson = JSON.stringify(j.skills || []);
       const skillsText = (j.skills || []).join(' ');
+      const contactsJson = JSON.stringify(Array.isArray(j.contacts) ? j.contacts : []);
 
       if (!existing) {
         insertJob.run(
@@ -1025,7 +1040,8 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
           now,
           now,
           scored.score,
-          JSON.stringify(scored.breakdown)
+          JSON.stringify(scored.breakdown),
+          contactsJson
         );
         upsertJobSource.run(j.id, j.source_id, j.source_type, j.apply_url || '', now);
         insertFts.run(j.id, j.title, j.company, j.location || '', skillsText, j.description_text || '');
@@ -1055,6 +1071,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
             (existing.salary_max ?? null) === (j.salary_max ?? null) &&
             (existing.apply_url || '') === (j.apply_url || '') &&
             Number(existing.match_score ?? 0) === scored.score &&
+            (existing.contacts || '[]') === contactsJson &&
             Number(existing.desc_len ?? 0) === (j.description_text || '').length;
           if (isUnchanged) {
             touchExistingJob.run(now, existing.id);
@@ -1092,6 +1109,7 @@ export function upsertJobsBatch(db, normalizedJobs, sourceId) {
               now,
               scored.score,
               JSON.stringify(scored.breakdown),
+              contactsJson,
               existing.id
             );
             deleteFts.run(existing.id);
@@ -1145,10 +1163,11 @@ export function queryJobs(db, params = {}) {
     q = '',
     minScore = 0,
     workMode = '',
-    seniority = 'intern,junior',
+    seniority = '',
+    lane = '',
     roleCategory = 'tech',
     batch = '',
-    locationPriority = '',
+    locationPriority = 'eligible',
     sourceType = '',
     excludeSourceType = '',
     sourceId = '',
@@ -1198,7 +1217,16 @@ export function queryJobs(db, params = {}) {
     }
   }
 
-  const effectiveSeniority = seniority === '' ? 'intern,junior' : seniority;
+  const isStartupLane = lane === 'startups';
+  if (isStartupLane) {
+    where.push(`j.source_type IN (${STARTUP_SOURCE_TYPES.map(() => '?').join(',')})`);
+    args.push(...STARTUP_SOURCE_TYPES);
+    // Founders rarely care about an unstated "mid" label, but 3+ years stated is a real bar
+    where.push('(j.experience_min IS NULL OR j.experience_min < 3)');
+  }
+
+  // 'unknown' = the posting never says what level it wants (the "maybe" bucket)
+  const effectiveSeniority = seniority === '' ? (isStartupLane ? 'intern,junior,unknown' : 'intern,junior') : seniority;
   if (effectiveSeniority && effectiveSeniority !== 'all') {
     const levels = String(effectiveSeniority)
       .split(',')
@@ -1237,14 +1265,18 @@ export function queryJobs(db, params = {}) {
   const remoteCond = aliasJobsSql(REMOTE_COND_SQL);
   const indiaCond = aliasJobsSql(INDIA_COND_SQL);
 
+  const eligibleCond = aliasJobsSql(ELIGIBLE_COND_SQL);
   if (locationPriority === 'bangalore') {
     where.push(blrCond);
   } else if (locationPriority === 'remote') {
     where.push(remoteCond);
   } else if (locationPriority === 'india') {
-    where.push(`(${blrCond} OR ${indiaCond})`);
+    where.push(`(${blrCond} OR ${indiaCond} OR (${remoteCond} AND j.location LIKE '%India%'))`);
   } else if (locationPriority === 'global') {
-    where.push(`NOT (${blrCond} OR ${remoteCond} OR ${indiaCond})`);
+    where.push(`NOT ${eligibleCond}`);
+  } else if (locationPriority !== 'all' && !(isStartupLane && (locationPriority === '' || locationPriority === 'eligible'))) {
+    // Default: only roles an India-based candidate can actually apply to
+    where.push(eligibleCond);
   }
 
   if (sourceType && sourceType !== 'all') {
@@ -1369,7 +1401,7 @@ export function queryJobs(db, params = {}) {
              j.salary_period, j.salary_raw, j.is_salary_estimated, substr(j.description_text, 1, 240) AS description_text, j.skills,
              j.green_flags, j.red_flags, j.visa_sponsorship, j.apply_url, j.canonical_url, j.company_url,
              j.posted_at, j.first_seen_at, j.last_seen_at, j.is_active, j.match_score,
-             j.match_breakdown, j.status, j.user_notes, j.applied_at
+             j.match_breakdown, j.status, j.user_notes, j.applied_at, j.contacts
       FROM jobs j
       WHERE j.id IN (${ph})
     `;
@@ -1386,7 +1418,7 @@ export function queryJobs(db, params = {}) {
 
   // Dashboard global stats (scoped to Intern & Fresher eligible tech roles + total DB count)
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const techGuard = effectiveRoleCategory === 'all' ? '' : `AND ${ROLE_CATEGORY_SQL} != 'non_tech'`;
+  const techGuard = `${effectiveRoleCategory === 'all' ? '' : `AND ${ROLE_CATEGORY_SQL} != 'non_tech'`} AND ${ELIGIBLE_COND_SQL}`;
   const stats = db
     .prepare(`
       SELECT
@@ -1467,85 +1499,15 @@ export function updateJobStatus(db, id, { status, user_notes }) {
   return getJobById(db, id);
 }
 
-export function getAnalytics(db) {
-  const activeRows = db
-    .prepare('SELECT skills, salary_min, salary_max, seniority, work_mode, source_type, company, match_score FROM jobs WHERE is_active = 1')
-    .all();
-
-  const skillCounts = new Map();
-  const sourceCounts = new Map();
-  const companyCounts = new Map();
-  const modeCounts = new Map();
-  const senioritySalaries = new Map();
-  const scoreBuckets = { '90-100': 0, '80-89': 0, '60-79': 0, '40-59': 0, '0-39': 0 };
-  const allMidSalaries = [];
-
-  for (const r of activeRows) {
-    const skills = safeJsonParse(r.skills, []);
-    for (const sk of skills) {
-      skillCounts.set(sk, (skillCounts.get(sk) || 0) + 1);
-    }
-    sourceCounts.set(r.source_type, (sourceCounts.get(r.source_type) || 0) + 1);
-    companyCounts.set(r.company, (companyCounts.get(r.company) || 0) + 1);
-    modeCounts.set(r.work_mode || 'unknown', (modeCounts.get(r.work_mode || 'unknown') || 0) + 1);
-
-    const s = Number(r.match_score ?? 0);
-    if (s >= 90) scoreBuckets['90-100']++;
-    else if (s >= 80) scoreBuckets['80-89']++;
-    else if (s >= 60) scoreBuckets['60-79']++;
-    else if (s >= 40) scoreBuckets['40-59']++;
-    else scoreBuckets['0-39']++;
-
-    const sMin = Number(r.salary_min || 0);
-    const sMax = Number(r.salary_max || 0);
-    if (sMin > 0 || sMax > 0) {
-      const mid = sMin && sMax ? Math.round((sMin + sMax) / 2) : sMax || sMin;
-      allMidSalaries.push(mid);
-      const lvl = r.seniority || 'unknown';
-      if (!senioritySalaries.has(lvl)) senioritySalaries.set(lvl, []);
-      senioritySalaries.get(lvl).push(mid);
-    }
-  }
-
-  allMidSalaries.sort((a, b) => a - b);
-  const medianSalary = allMidSalaries.length ? allMidSalaries[Math.floor(allMidSalaries.length / 2)] : null;
-
-  const topSkills = Array.from(skillCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 25)
-    .map(([skill, count]) => ({ skill, count }));
-
-  const bySource = Array.from(sourceCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([source, count]) => ({ source, count }));
-
-  const topCompanies = Array.from(companyCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 20)
-    .map(([company, count]) => ({ company, count }));
-
-  const byWorkMode = Array.from(modeCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([mode, count]) => ({ mode, count }));
-
-  const salaryBySeniority = Array.from(senioritySalaries.entries())
-    .map(([seniority, arr]) => {
-      arr.sort((a, b) => a - b);
-      const avg = Math.round(arr.reduce((sum, x) => sum + x, 0) / arr.length);
-      const median = arr[Math.floor(arr.length / 2)];
-      return { seniority, count: arr.length, avg, median, min: arr[0], max: arr[arr.length - 1] };
-    })
-    .sort((a, b) => b.median - a.median);
-
-  return {
-    totalJobs: activeRows.length,
-    jobsWithSalary: allMidSalaries.length,
-    medianSalary,
-    topSkills,
-    bySource,
-    topCompanies,
-    byWorkMode,
-    salaryBySeniority,
-    scoreBuckets,
-  };
+/** Most common skills across the roles that actually show up in the default feed. */
+export function getTopSkills(db, limit = 25) {
+  const rows = db
+    .prepare(
+      `SELECT skill.value AS skill, COUNT(*) AS count
+       FROM jobs, json_each(jobs.skills) AS skill
+       WHERE is_active = 1 AND seniority IN ('intern', 'junior') AND ${ELIGIBLE_COND_SQL}
+       GROUP BY skill.value ORDER BY count DESC LIMIT ?`
+    )
+    .all(limit);
+  return rows.map((r) => ({ skill: r.skill, count: Number(r.count) }));
 }

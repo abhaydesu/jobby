@@ -4,7 +4,6 @@ import {
   sanitizeHtml,
   extractSkills,
   extractSalary,
-  estimateStipendBenchmark,
   classifyRoleCategory,
   extractExperience,
   extractEligibility,
@@ -263,6 +262,7 @@ export function normalizeJobPayload({
   applyUrl,
   companyUrl = '',
   postedAt = null,
+  contacts = [],
 }) {
   const cleanTitle = stripHtmlToText(title || '').replace(/\s+/g, ' ').trim();
   const cleanCompany = stripHtmlToText(company || '').replace(/\s+/g, ' ').trim() || 'Unknown Company';
@@ -282,17 +282,7 @@ export function normalizeJobPayload({
   }
   const workMode = explicitMode || extractWorkMode(plainText, cleanLocation, cleanTitle, explicitRemote);
   const extractedSal = extractSalary(plainText, structuredSalary);
-  const salary =
-    extractedSal.min !== null
-      ? extractedSal
-      : estimateStipendBenchmark({
-          title: cleanTitle,
-          company: cleanCompany,
-          location: cleanLocation,
-          workMode,
-          seniority: exp.seniority,
-          sourceType,
-        });
+  const salary = extractedSal;
   const visaSponsorship = extractVisaSponsorship(plainText, explicitVisa);
 
   const isoPosted = postedAt ? safeIsoDate(postedAt) : null;
@@ -351,7 +341,31 @@ export function normalizeJobPayload({
     apply_url: applyUrl,
     company_url: companyUrl || '',
     posted_at: isoPosted,
+    contacts: normalizeContacts(contacts),
   };
+}
+
+/**
+ * People you can reach directly about a role: founders, the HN poster, a hiring email.
+ * Shape: { name, role, url, kind } where kind is 'linkedin' | 'email' | 'hn' | 'twitter' | 'web'.
+ */
+export function normalizeContacts(list = []) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const c of list) {
+    if (!c || typeof c !== 'object') continue;
+    const url = String(c.url || '').trim();
+    const name = String(c.name || '').trim().slice(0, 80);
+    if (!url && !name) continue;
+    if (url && !/^(https?:\/\/|mailto:)/i.test(url)) continue;
+    const key = (url || name).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, role: String(c.role || '').trim().slice(0, 80), url, kind: String(c.kind || 'web') });
+    if (out.length >= 6) break;
+  }
+  return out;
 }
 
 function safeIsoDate(val) {

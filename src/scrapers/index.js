@@ -23,7 +23,6 @@ import {
   scrapeJobicy,
   scrapeWeWorkRemotely,
   scrapeHackerNewsWhoIsHiring,
-  scrapeYCJobs,
   scrapeSimplifyGithub,
   scrapeAmazonJobs,
   scrapeGoogleCareers,
@@ -34,19 +33,21 @@ import {
   scrapeLinkedInGuest,
 } from './aggregators.js';
 import { scrapeCustomUrl } from './fingerprinter.js';
+import { scrapeYCJobs } from './startups.js';
+import { scrapeCutshort } from './india.js';
 import { resolveOffsiteAtsUrls, scanJobsForAtsCandidates } from './autodiscover.js';
 import { upsertJobsBatch, recordSourceHealth } from '../db.js';
 
 export const DEFAULT_SOURCES = [
   // Tier 2: Dedicated Early-Career & Intern/New-Grad Repositories + Startup Feeds
-  { id: 'simplify-internships', name: 'SimplifyJobs Summer Internships', type: 'simplify', tier: 2, config: { repo: 'Summer2027-Internships', defaultSeniority: 'intern', category: 'Internships' } },
-  { id: 'simplify-newgrad', name: 'SimplifyJobs New Grad Roles', type: 'simplify', tier: 2, config: { repo: 'New-Grad-Positions', defaultSeniority: 'junior', category: 'New Grad' } },
+  // Simplify lists are US-centric and ~12 MB each; only a handful of rows are India/remote-reachable, so poll rarely.
+  { id: 'simplify-internships', name: 'SimplifyJobs Summer Internships', type: 'simplify', tier: 2, config: { repo: 'Summer2027-Internships', defaultSeniority: 'intern', category: 'Internships', pollIntervalMinutes: 360 } },
+  { id: 'simplify-newgrad', name: 'SimplifyJobs New Grad Roles', type: 'simplify', tier: 2, config: { repo: 'New-Grad-Positions', defaultSeniority: 'junior', category: 'New Grad', pollIntervalMinutes: 360 } },
   { id: 'agg-hn-hiring', name: "HN 'Who is Hiring?' (Monthly)", type: 'hackernews', tier: 2, config: { category: 'Startups' } },
-  { id: 'agg-yc-jobs', name: 'Y Combinator Jobs (HN Feed)', type: 'yc', tier: 2, config: { category: 'YC Startups' } },
+  { id: 'agg-yc-jobs', name: 'Y Combinator Jobs (ycombinator.com/jobs)', type: 'yc', tier: 2, config: { category: 'YC Startups', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 180 } },
 
   // Tier 3: Global & Remote Aggregators (Broadest reach across thousands of companies)
   { id: 'agg-remotive', name: 'Remotive (Global Remote)', type: 'remotive', tier: 3, config: { category: 'Global Remote' } },
-  { id: 'agg-arbeitnow', name: 'Arbeitnow (ATS & Visa Board)', type: 'arbeitnow', tier: 3, config: { category: 'EU & Remote' } },
   { id: 'agg-remoteok', name: 'RemoteOK (Tech Remote)', type: 'remoteok', tier: 3, config: { category: 'Tech Remote' } },
   { id: 'agg-himalayas', name: 'Himalayas (Remote Tech)', type: 'himalayas', tier: 3, config: { category: 'Remote Tech' } },
   { id: 'agg-jobicy', name: 'Jobicy (Remote Jobs)', type: 'jobicy', tier: 3, config: { category: 'Remote' } },
@@ -107,6 +108,9 @@ export const DEFAULT_SOURCES = [
   { id: 'gh-pinterest', name: 'Pinterest', type: 'greenhouse', tier: 1, config: { slug: 'pinterest', companyName: 'Pinterest' } },
   { id: 'gh-lyft', name: 'Lyft', type: 'greenhouse', tier: 1, config: { slug: 'lyft', companyName: 'Lyft' } },
   { id: 'gh-affirm', name: 'Affirm', type: 'greenhouse', tier: 1, config: { slug: 'affirm', companyName: 'Affirm' } },
+  // India-heavy boards verified Nov 2026 (most of their openings are in India)
+  { id: 'gh-sigmoid', name: 'Sigmoid', type: 'greenhouse', tier: 1, config: { slug: 'sigmoid', companyName: 'Sigmoid' } },
+  { id: 'gh-commvault', name: 'Commvault', type: 'greenhouse', tier: 1, config: { slug: 'commvault', companyName: 'Commvault' } },
   { id: 'gh-razorpay', name: 'Razorpay', type: 'greenhouse', tier: 1, config: { slug: 'razorpaysoftwareprivatelimited', companyName: 'Razorpay', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
 
   // Tier 1: Direct Ashby HQ ATS Boards
@@ -142,6 +146,8 @@ export const DEFAULT_SOURCES = [
   { id: 'ashby-livekit', name: 'LiveKit', type: 'ashby', tier: 1, config: { slug: 'livekit', companyName: 'LiveKit' } },
   { id: 'ashby-twenty', name: 'Twenty', type: 'ashby', tier: 1, config: { slug: 'twenty', companyName: 'Twenty' } },
   { id: 'ashby-render', name: 'Render', type: 'ashby', tier: 1, config: { slug: 'render', companyName: 'Render' } },
+  { id: 'ashby-tekion', name: 'Tekion', type: 'ashby', tier: 1, config: { slug: 'tekion', companyName: 'Tekion' } },
+  { id: 'ashby-atlan', name: 'Atlan', type: 'ashby', tier: 1, config: { slug: 'atlan', companyName: 'Atlan' } },
   { id: 'ashby-firecrawl', name: 'Firecrawl', type: 'ashby', tier: 1, config: { slug: 'firecrawl', companyName: 'Firecrawl' } },
 
   // Tier 1: Direct Lever ATS Boards
@@ -152,6 +158,8 @@ export const DEFAULT_SOURCES = [
   { id: 'lever-hevo', name: 'Hevo Data', type: 'lever', tier: 1, config: { slug: 'hevodata', companyName: 'Hevo Data' } },
   { id: 'lever-meesho', name: 'Meesho', type: 'lever', tier: 1, config: { slug: 'meesho', companyName: 'Meesho' } },
   { id: 'lever-cred', name: 'CRED', type: 'lever', tier: 1, config: { slug: 'cred', companyName: 'CRED' } },
+  { id: 'lever-mindtickle', name: 'MindTickle', type: 'lever', tier: 1, config: { slug: 'mindtickle', companyName: 'MindTickle' } },
+  { id: 'lever-fampay', name: 'FamPay', type: 'lever', tier: 1, config: { slug: 'fampay', companyName: 'FamPay' } },
   { id: 'lever-paytm', name: 'Paytm', type: 'lever', tier: 1, config: { slug: 'paytm', companyName: 'Paytm' } },
 
   // Tier 1: Direct SmartRecruiters & Rippling Boards
@@ -179,15 +187,13 @@ export const DEFAULT_SOURCES = [
   { id: 'oracle-jpmc', name: 'JPMorgan Chase', type: 'oracle_hcm', tier: 1, config: { host: 'jpmc.fa.oraclecloud.com', site: 'CX_1001', companyName: 'JPMorgan Chase', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
   { id: 'oracle-dell', name: 'Dell Technologies', type: 'oracle_hcm', tier: 1, config: { host: 'enterpriseplatform.dell.com', site: 'careers', companyName: 'Dell Technologies', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
   { id: 'oracle-corp', name: 'Oracle', type: 'oracle_hcm', tier: 1, config: { host: 'eeho.fa.us2.oraclecloud.com', site: 'CX_45001', companyName: 'Oracle', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
-  { id: 'personio-main', name: 'Personio', type: 'personio', tier: 1, config: { slug: 'personio', companyName: 'Personio', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
-  { id: 'teamtailor-main', name: 'Teamtailor', type: 'teamtailor', tier: 1, config: { host: 'career.teamtailor.com', companyName: 'Teamtailor', timeoutMs: 20000, weight: 1, pollIntervalMinutes: 60 } },
   { id: 'sr-bosch-india', name: 'Bosch India', type: 'smartrecruiters', tier: 1, config: { slug: 'BoschGroup', query: 'Bengaluru', companyName: 'Bosch', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 45 } },
 
   { id: 'bigtech-amazon', name: 'Amazon Jobs (India & Interns)', type: 'amazon', tier: 1, config: { companyName: 'Amazon', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
   { id: 'bigtech-google', name: 'Google Careers (India)', type: 'google', tier: 1, config: { companyName: 'Google', timeoutMs: 30000, weight: 3, pollIntervalMinutes: 45 } },
   { id: 'bigtech-atlassian', name: 'Atlassian (India & Remote)', type: 'atlassian', tier: 1, config: { companyName: 'Atlassian', timeoutMs: 35000, weight: 3, pollIntervalMinutes: 45 } },
-  { id: 'bigtech-apple', name: 'Apple Careers (India)', type: 'apple', tier: 1, config: { companyName: 'Apple', timeoutMs: 30000, weight: 2, pollIntervalMinutes: 45 } },
   { id: 'india-internshala', name: 'Internshala (CS Bengaluru & Remote)', type: 'internshala', tier: 2, config: { category: 'India Internships', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
+  { id: 'india-cutshort', name: 'Cutshort (India Startups)', type: 'cutshort', tier: 2, config: { category: 'India Tech', timeoutMs: 60000, weight: 2, pollIntervalMinutes: 120, maxPages: 40 } },
   { id: 'india-instahyre', name: 'Instahyre (India Startups)', type: 'instahyre', tier: 2, config: { category: 'India Tech', timeoutMs: 25000, weight: 2, pollIntervalMinutes: 30 } },
   { id: 'agg-linkedin-guest', name: 'LinkedIn Guest (Fresher BLR/India/Remote)', type: 'linkedin_guest', tier: 3, config: { category: 'Global & India', timeoutMs: 90000, weight: 3, pollIntervalMinutes: 360 } },
 ];
@@ -214,11 +220,18 @@ export function seedDefaultSources(db) {
     'gh-confluent', 'gh-browserstack', 'ashby-truefoundry', 'ashby-cal',
     'lever-hasura', 'lever-appsmith', 'agg-themuse', 'ashby-deel',
     'sr-visa', 'workable-canonical',
+    // Retired Nov 2026: zero India-reachable fresher roles across their whole history
+    'agg-arbeitnow', 'personio-main', 'teamtailor-main', 'bigtech-apple',
   ];
   const placeholders = deadIds.map(() => '?').join(',');
-  db.prepare(`DELETE FROM jobs_fts WHERE job_id IN (SELECT id FROM jobs WHERE source_id IN (${placeholders}))`).run(...deadIds);
-  db.prepare(`DELETE FROM jobs WHERE source_id IN (${placeholders})`).run(...deadIds);
+  // Untriaged jobs go; anything saved/applied/noted is kept
+  db.prepare(`DELETE FROM jobs_fts WHERE job_id IN (SELECT id FROM jobs WHERE source_id IN (${placeholders}) AND status = 'new')`).run(...deadIds);
+  db.prepare(`DELETE FROM jobs WHERE source_id IN (${placeholders}) AND status = 'new'`).run(...deadIds);
   db.prepare(`DELETE FROM sources WHERE id IN (${placeholders})`).run(...deadIds);
+
+  // One-time: 'agg-yc-jobs' used to hold HN "X (YC S22) is hiring" ads; it now holds ycombinator.com/jobs postings
+  db.prepare(`DELETE FROM jobs_fts WHERE job_id IN (SELECT id FROM jobs WHERE source_id = 'agg-yc-jobs' AND status = 'new' AND apply_url NOT LIKE 'https://www.ycombinator.com/companies/%')`).run();
+  db.prepare(`DELETE FROM jobs WHERE source_id = 'agg-yc-jobs' AND status = 'new' AND apply_url NOT LIKE 'https://www.ycombinator.com/companies/%'`).run();
 
   const upsert = db.prepare(`
     INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins)
@@ -264,6 +277,7 @@ const ADAPTER_MAP = {
   apple: scrapeAppleCareers,
   internshala: scrapeInternshala,
   instahyre: scrapeInstahyre,
+  cutshort: scrapeCutshort,
   linkedin_guest: scrapeLinkedInGuest,
   custom: scrapeCustomUrl,
 };

@@ -26,6 +26,12 @@ const state = {
   },
   jobs: [],
   total: 0,
+  startups: {
+    locationPriority: '',
+    untriagedOnly: true,
+    jobs: [],
+    total: 0,
+  },
   fresh: {
     hours: 24,
     locationPriority: '',
@@ -135,14 +141,8 @@ function fmtStipendPill(job) {
       ? `${fmtMonthlyAmount(minMo, cur)}–${fmtMonthlyAmount(maxMo, cur)}/mo`
       : `${fmtMonthlyAmount(maxMo, cur)}/mo`;
 
-  const bd = job.match_breakdown || {};
-  const conf = job.salary_confidence || bd.salaryConfidence || (job.is_salary_estimated ? 'low' : 'high');
-  const basis = job.salary_basis || bd.salaryBasis || (job.is_salary_estimated ? 'Market benchmark estimate' : 'Extracted directly from job listing');
-
-  if (!job.is_salary_estimated) {
-    return `<span class="stipend-line accent-pill mono" title="${esc(`Confidence: ${conf} · ${basis}`)}"><span class="dot positive"></span>${esc(moRange)} <span class="stipend-note">listed</span></span>`;
-  }
-  return `<span class="stipend-line estimated mono" title="${esc(`Estimated (${conf} confidence) · Basis: ${basis}`)}">~${esc(moRange)} <span class="stipend-note">est.</span></span>`;
+  const basis = job.match_breakdown?.salaryBasis || 'Listed in job post';
+  return `<span class="stipend-line accent-pill mono" title="${esc(basis)}"><span class="dot positive"></span>${esc(moRange)}</span>`;
 }
 
 function companyInitials(company = '') {
@@ -175,20 +175,22 @@ function detectJobPriorityTier(job) {
   const loc = String(job.location || '');
   if (/\b(bangalore|bengaluru|blr|karnataka)\b/i.test(loc)) return 'bangalore';
   if (job.work_mode === 'remote' || /\b(remote|worldwide|anywhere)\b/i.test(loc)) return 'remote';
-  if (!/\b(indiana|indianapolis)\b/i.test(loc) && /\b(india|hyderabad|pune|mumbai|gurgaon|gurugram|noida|chennai|delhi|kolkata|ahmedabad|kochi)\b/i.test(loc)) return 'india';
-  return 'global';
+  if (/\b(india|hyderabad|pune|mumbai|gurgaon|gurugram|noida|chennai|delhi|kolkata|ahmedabad|kochi)\b/i.test(loc)) return 'india';
+  return 'abroad';
 }
 
 function renderPriorityPill(tier) {
   if (tier === 'bangalore') return '<span class="tag-pill strong"><span class="dot accent"></span>Bengaluru</span>';
   if (tier === 'remote') return '<span class="tag-pill strong"><span class="dot accent"></span>Remote</span>';
   if (tier === 'india') return '<span class="tag-pill"><span class="dot muted"></span>India</span>';
-  return '<span class="tag-pill">Global</span>';
+  if (tier === 'remote_restricted') return '<span class="tag-pill" title="Remote, but restricted to another country">Remote (abroad)</span>';
+  if (tier === 'unknown') return '';
+  return '<span class="tag-pill">Abroad</span>';
 }
 
 function renderRolePill(seniority) {
   if (seniority === 'intern') return '<span class="tag-pill strong">Intern</span>';
-  if (seniority === 'junior') return '<span class="tag-pill">New Grad</span>';
+  if (seniority === 'junior') return '<span class="tag-pill">Fresher</span>';
   if (seniority && seniority !== 'unknown') return `<span class="tag-pill">${esc(seniority.replace(/\b\w/g, (c) => c.toUpperCase()))}</span>`;
   return '';
 }
@@ -204,11 +206,10 @@ function switchTab(tabName) {
 
   if (tabName === 'feed') loadJobs();
   if (tabName === 'fresh') loadFreshJobs();
+  if (tabName === 'startups') loadStartupJobs();
   if (tabName === 'crm') loadCrmBoard();
   if (tabName === 'scraper') loadScraperConsole();
   if (tabName === 'profile') loadProfile();
-  if (tabName === 'analytics') loadAnalytics();
-  if (tabName === 'research') loadResearch();
 }
 
 let jobsAbortCtrl = null;
@@ -541,6 +542,7 @@ function renderActiveFilterChips() {
 const SOURCE_DISPLAY_NAMES = {
   internshala: 'Internshala',
   instahyre: 'Instahyre',
+  cutshort: 'Cutshort',
   linkedin_guest: 'LinkedIn Guest',
   linkedin_ext: 'LinkedIn Extension',
   linkedin_email: 'LinkedIn Email',
@@ -790,7 +792,10 @@ function updateInspectorNavButtons() {
 }
 
 async function optimisticToggleSave(jobId) {
-  const job = state.jobs.find((j) => j.id === jobId) || state.fresh.jobs.find((j) => j.id === jobId);
+  const job =
+    state.jobs.find((j) => j.id === jobId) ||
+    state.fresh.jobs.find((j) => j.id === jobId) ||
+    state.startups.jobs.find((j) => j.id === jobId);
   if (!job) return;
   const prevStatus = job.status || 'new';
   const nextStatus = prevStatus === 'saved' ? 'new' : 'saved';
@@ -809,6 +814,9 @@ async function optimisticToggleSave(jobId) {
 
   if (state.tab === 'fresh' && state.fresh.untriagedOnly) {
     loadFreshJobs();
+  }
+  if (state.tab === 'startups' && state.startups.untriagedOnly) {
+    loadStartupJobs();
   }
 
   toast(
@@ -829,7 +837,11 @@ async function optimisticToggleSave(jobId) {
 async function optimisticDismissJob(jobId) {
   const idx = state.jobs.findIndex((j) => j.id === jobId);
   const freshIdx = state.fresh.jobs.findIndex((j) => j.id === jobId);
-  const job = (idx >= 0 ? state.jobs[idx] : null) || (freshIdx >= 0 ? state.fresh.jobs[freshIdx] : null);
+  const startupIdx = state.startups.jobs.findIndex((j) => j.id === jobId);
+  const job =
+    (idx >= 0 ? state.jobs[idx] : null) ||
+    (freshIdx >= 0 ? state.fresh.jobs[freshIdx] : null) ||
+    (startupIdx >= 0 ? state.startups.jobs[startupIdx] : null);
   const prevStatus = job?.status || 'new';
 
   await api(`/api/jobs/${encodeURIComponent(jobId)}`, {
@@ -842,6 +854,11 @@ async function optimisticDismissJob(jobId) {
     state.fresh.jobs.splice(freshIdx, 1);
     state.fresh.total = Math.max(0, state.fresh.total - 1);
     if (state.tab === 'fresh') renderFreshJobsList();
+  }
+  if (startupIdx >= 0) {
+    state.startups.jobs.splice(startupIdx, 1);
+    state.startups.total = Math.max(0, state.startups.total - 1);
+    if (state.tab === 'startups') renderStartupJobsList();
   }
 
   if (idx >= 0 && state.filters.hideDismissed) {
@@ -899,10 +916,16 @@ function renderJobRowHtml(job, idx, { isFocused = false, ageField = 'posted_at' 
     job.seniority === 'intern'
       ? 'Intern'
       : job.seniority === 'junior'
-        ? 'New Grad'
-        : job.seniority && job.seniority !== 'unknown'
-          ? job.seniority.replace(/\b\w/g, (c) => c.toUpperCase())
-          : '';
+        ? 'Fresher'
+        : job.seniority === 'unknown'
+          ? 'Level unstated'
+          : job.seniority
+            ? job.seniority.replace(/\b\w/g, (c) => c.toUpperCase())
+            : '';
+  const people = (job.contacts || []).filter((c) => c.kind !== 'web');
+  const contactHtml = people.length
+    ? `<span class="tag-pill" title="${esc(people.map((c) => `${c.name} — ${c.role}`).join('\n'))}">${people.length} contact${people.length > 1 ? 's' : ''}</span>`
+    : '';
   const isPriorityLoc = locTier === 'bangalore' || locTier === 'remote';
   const alsoOnHtml =
     Array.isArray(job.also_on) && job.also_on.length
@@ -934,6 +957,7 @@ function renderJobRowHtml(job, idx, { isFocused = false, ageField = 'posted_at' 
           <span class="job-sep">·</span>
           <span>${esc(fmtSourceLabel(job.source_type))}</span>
           ${alsoOnHtml}
+          ${contactHtml}
         </div>
 
         <div class="job-foot-line">
@@ -1024,6 +1048,64 @@ function renderJobsList() {
   }
 }
 
+function renderContactsBox(contacts) {
+  if (!contacts.length) return '';
+  const label = { linkedin: 'LinkedIn', email: 'Email', hn: 'HN profile', twitter: 'X / Twitter', web: 'Open' };
+  return `
+    <div class="panel-box" style="margin-bottom:12px;">
+      <strong style="font-size:0.86rem;">Reach out directly</strong>
+      <ul style="list-style:none; padding:0; margin:8px 0 0;">
+        ${contacts
+          .map(
+            (c) => `
+          <li style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; font-size:0.84rem;">
+            <span>${esc(c.name)}${c.role ? ` <span class="muted">· ${esc(c.role)}</span>` : ''}</span>
+            ${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(label[c.kind] || 'Open')} ↗</a>` : ''}
+          </li>`
+          )
+          .join('')}
+      </ul>
+    </div>`;
+}
+
+async function loadStartupJobs() {
+  const st = state.startups;
+  const qs = new URLSearchParams({
+    lane: 'startups',
+    roleCategory: 'tech',
+    locationPriority: st.locationPriority || '',
+    status: st.untriagedOnly ? 'new' : '',
+    hideDismissed: 'true',
+    sortBy: 'match',
+    limit: '80',
+    offset: '0',
+    includeStats: '0',
+  });
+  const data = await api(`/api/jobs?${qs.toString()}`);
+  state.startups.jobs = data.jobs || [];
+  state.startups.total = data.total || 0;
+  if ($('#badge-startups')) $('#badge-startups').textContent = state.startups.total.toLocaleString();
+  renderStartupJobsList();
+}
+
+function renderStartupJobsList() {
+  const list = $('#startups-jobs-list');
+  const countEl = $('#startups-count-text');
+  if (!list) return;
+  const jobs = state.startups.jobs || [];
+  if (countEl) countEl.textContent = `${state.startups.total.toLocaleString()} startup roles · India first, then open-remote, then the rest`;
+  if (jobs.length === 0) {
+    list.innerHTML = `
+      <div class="panel-box" style="text-align:center; padding: 48px 24px; border-bottom: 1px solid var(--border);">
+        <h3>No startup roles yet</h3>
+        <p class="muted small">Run a scrape — the YC and HN "Who is hiring" sources fill this tab.</p>
+      </div>`;
+    return;
+  }
+  list.innerHTML = jobs.map((job, idx) => renderJobRowHtml(job, idx)).join('');
+  bindJobListHandlers(list, { focusable: false });
+}
+
 async function loadFreshJobs() {
   const fr = state.fresh;
   const qs = new URLSearchParams({
@@ -1075,7 +1157,7 @@ function renderFreshJobsList() {
 
 async function refreshSkillCloud() {
   try {
-    const data = await api('/api/analytics');
+    const data = await api('/api/skills');
     state.topSkills = (data.topSkills || []).slice(0, 14);
     const box = $('#f-skill-cloud');
     box.innerHTML = state.topSkills
@@ -1157,7 +1239,7 @@ async function openJobDrawer(jobId) {
   updateInspectorNavButtons();
 
   const data = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
-  const { job, tailoring } = data;
+  const { job } = data;
   const locTier = detectJobPriorityTier(job);
 
   $('#d-source-badge').textContent =
@@ -1170,6 +1252,8 @@ async function openJobDrawer(jobId) {
   $('#d-status-select').value = job.status || 'new';
   $('#d-notes-input').value = job.user_notes || '';
   $('#d-notes-status').textContent = '';
+
+  $('#d-contacts').innerHTML = renderContactsBox(job.contacts || []);
 
   const stipendPill = fmtStipendPill(job);
   $('#d-meta-row').innerHTML = `
@@ -1225,50 +1309,6 @@ async function openJobDrawer(jobId) {
   $('#d-flags-row').innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px;">${gf}${rf}</div>`;
 
   $('#d-description').innerHTML = job.description_html || `<p>${esc(job.description_text || 'No description provided.')}</p>`;
-
-  $('#d-tailor-content').innerHTML = `
-    <div class="tailor-box">
-      <h4>ATS Keywords</h4>
-      <div class="skills-row">
-        ${(tailoring.atsKeywords || []).map((k) => `<span class="skill-chip matched">${esc(k)}</span>`).join('')}
-      </div>
-      <p class="muted small" style="margin-top:8px;">${esc(tailoring.gapAdvice)}</p>
-    </div>
-
-    <div class="tailor-box">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h4>Tailored Resume Summary</h4>
-        <button class="btn btn-secondary btn-sm copy-btn" data-copy="${esc(tailoring.resumeSummary)}">Copy</button>
-      </div>
-      <pre>${esc(tailoring.resumeSummary)}</pre>
-    </div>
-
-    <div class="tailor-box">
-      <h4>Bullet Suggestions</h4>
-      <ul style="padding-left:18px; margin:8px 0;">
-        ${(tailoring.bulletTemplates || []).map((b) => `<li style="margin-bottom:6px; font-size:0.84rem; color:var(--text-secondary);">${esc(b)}</li>`).join('')}
-      </ul>
-    </div>
-
-    <div class="tailor-box">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h4>Cold Outreach Note</h4>
-        <button class="btn btn-primary btn-sm copy-btn" data-copy="${esc(tailoring.outreachNote)}">Copy</button>
-      </div>
-      <pre>${esc(tailoring.outreachNote)}</pre>
-    </div>
-  `;
-
-  $$('.copy-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(btn.dataset.copy);
-        toast('Copied to clipboard');
-      } catch {
-        toast('Copy failed — copy manually');
-      }
-    });
-  });
 
   $$('.drawer-tab').forEach((t) => t.classList.toggle('active', t.dataset.dtab === 'overview'));
   $$('.drawer-subpanel').forEach((p) => p.classList.toggle('active', p.id === 'dpanel-overview'));
@@ -1640,150 +1680,6 @@ async function saveProfile() {
   loadJobs();
 }
 
-async function loadAnalytics() {
-  const d = await api('/api/analytics');
-  const maxSkill = Math.max(1, ...(d.topSkills || []).map((x) => x.count));
-  const maxSrc = Math.max(1, ...(d.bySource || []).map((x) => x.count));
-  const maxSal = Math.max(1, ...(d.salaryBySeniority || []).map((x) => x.median));
-  const maxBucket = Math.max(1, ...Object.values(d.scoreBuckets || { a: 1 }));
-
-  $('#analytics-grid').innerHTML = `
-    <div class="panel-box">
-      <h3>Top In-Demand Skills</h3>
-      <p class="muted small">Active jobs: <strong class="mono">${d.totalJobs}</strong> · Disclosed or benchmarked pay: <strong class="mono">${d.jobsWithSalary}</strong></p>
-      <div style="margin-top:12px;">
-        ${(d.topSkills || [])
-          .slice(0, 18)
-          .map(
-            (s) => `
-          <div class="bar-row">
-            <span>${esc(s.skill)}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${Math.round((s.count / maxSkill) * 100)}%"></div></div>
-            <span class="bar-val mono">${s.count}</span>
-          </div>`
-          )
-          .join('')}
-      </div>
-    </div>
-
-    <div class="panel-box">
-      <h3>Yield by Platform</h3>
-      <div style="margin-top:12px;">
-        ${(d.bySource || [])
-          .map(
-            (s) => `
-          <div class="bar-row">
-            <span class="mono">${esc(s.source.toUpperCase())}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${Math.round((s.count / maxSrc) * 100)}%"></div></div>
-            <span class="bar-val mono">${s.count}</span>
-          </div>`
-          )
-          .join('')}
-      </div>
-
-      <div class="divider"></div>
-      <h3>Score Distribution</h3>
-      <div style="margin-top:10px;">
-        ${Object.entries(d.scoreBuckets || {})
-          .map(
-            ([bucket, cnt]) => `
-          <div class="bar-row">
-            <span class="mono">${esc(bucket)}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${Math.round((cnt / maxBucket) * 100)}%"></div></div>
-            <span class="bar-val mono">${cnt}</span>
-          </div>`
-          )
-          .join('')}
-      </div>
-    </div>
-
-    <div class="panel-box">
-      <h3>Median Annualized Compensation by Level</h3>
-      <div style="margin-top:12px;">
-        ${
-          (d.salaryBySeniority || []).length === 0
-            ? '<p class="muted">No compensation data yet.</p>'
-            : d.salaryBySeniority
-                .map(
-                  (s) => `
-              <div class="bar-row">
-                <span class="mono">${esc(s.seniority.toUpperCase())} (${s.count})</span>
-                <div class="bar-track"><div class="bar-fill" style="width:${Math.round((s.median / maxSal) * 100)}%"></div></div>
-                <span class="bar-val mono">$${Math.round(s.median / 1000)}k</span>
-              </div>`
-                )
-                .join('')
-        }
-      </div>
-    </div>
-
-    <div class="panel-box">
-      <h3>Top Hiring Companies</h3>
-      <div style="margin-top:12px;">
-        ${(d.topCompanies || [])
-          .slice(0, 14)
-          .map((c) => {
-            const maxC = Math.max(1, d.topCompanies[0]?.count || 1);
-            return `
-            <div class="bar-row">
-              <span>${esc(c.company)}</span>
-              <div class="bar-track"><div class="bar-fill" style="width:${Math.round((c.count / maxC) * 100)}%"></div></div>
-              <span class="bar-val mono">${c.count}</span>
-            </div>`;
-          })
-          .join('')}
-      </div>
-    </div>
-  `;
-}
-
-function renderMarkdownSafe(md = '') {
-  const lines = md.split('\n');
-  const out = [];
-  let inTable = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('|')) {
-      if (!inTable) {
-        out.push('<table>');
-        inTable = true;
-      }
-      if (/^\|[\s:-]+\|/.test(line)) continue;
-      const cells = line.split('|').slice(1, -1).map((c) => c.trim());
-      const tag = i > 0 && lines[i + 1] && /^\|[\s:-]+\|/.test(lines[i + 1]) ? 'th' : 'td';
-      out.push(`<tr>${cells.map((c) => `<${tag}>${inlineMd(c)}</${tag}>`).join('')}</tr>`);
-      continue;
-    } else if (inTable) {
-      out.push('</table>');
-      inTable = false;
-    }
-
-    if (line.startsWith('### ')) out.push(`<h3>${inlineMd(line.slice(4))}</h3>`);
-    else if (line.startsWith('## ')) out.push(`<h2>${inlineMd(line.slice(3))}</h2>`);
-    else if (line.startsWith('# ')) out.push(`<h1>${inlineMd(line.slice(2))}</h1>`);
-    else if (line.startsWith('---')) out.push('<hr/>');
-    else if (/^\s*[-*]\s+/.test(line)) out.push(`<p style="margin:4px 0 4px 14px;">• ${inlineMd(line.replace(/^\s*[-*]\s+/, ''))}</p>`);
-    else if (/^\s*\d+\.\s+/.test(line)) out.push(`<p style="margin:4px 0 4px 10px;">${inlineMd(line)}</p>`);
-    else if (line.trim() === '') out.push('');
-    else out.push(`<p>${inlineMd(line)}</p>`);
-  }
-  if (inTable) out.push('</table>');
-  return out.join('\n');
-}
-
-function inlineMd(text) {
-  return esc(text)
-    .replace(/`([^`]+)`/g, '<code class="mono">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
-}
-
-async function loadResearch() {
-  const data = await api('/api/research');
-  $('#research-content').innerHTML = renderMarkdownSafe(data.markdown || '');
-}
-
 function connectSse() {
   const evtSource = new EventSource('/api/events');
   evtSource.onmessage = (event) => {
@@ -1995,8 +1891,8 @@ function bindEvents() {
       const fn = state.lastUndo;
       state.lastUndo = null;
       await fn();
-    } else if (state.activeJobId && ['1', '2', '3'].includes(e.key)) {
-      const map = { '1': 'overview', '2': 'tailor', '3': 'notes' };
+    } else if (state.activeJobId && ['1', '2'].includes(e.key)) {
+      const map = { '1': 'overview', '2': 'notes' };
       const targetTab = map[e.key];
       $$('.drawer-tab').forEach((t) => t.classList.toggle('active', t.dataset.dtab === targetTab));
       $$('.drawer-subpanel').forEach((p) => p.classList.toggle('active', p.id === `dpanel-${targetTab}`));
@@ -2150,9 +2046,20 @@ function bindEvents() {
   });
 
   $('#btn-refresh-crm').addEventListener('click', loadCrmBoard);
-  $('#btn-refresh-analytics').addEventListener('click', loadAnalytics);
 
   $('#btn-refresh-fresh')?.addEventListener('click', loadFreshJobs);
+  $('#btn-refresh-startups')?.addEventListener('click', loadStartupJobs);
+  $$('#startups-loc-seg .seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('#startups-loc-seg .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      state.startups.locationPriority = btn.dataset.loc || '';
+      loadStartupJobs();
+    });
+  });
+  $('#startups-untriaged-only')?.addEventListener('change', (e) => {
+    state.startups.untriagedOnly = e.target.checked;
+    loadStartupJobs();
+  });
   $('#btn-fresh-scrape')?.addEventListener('click', () => triggerScrape('all'));
   $$('#fresh-window-seg .seg-btn').forEach((btn) => {
     btn.addEventListener('click', () => {

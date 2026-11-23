@@ -424,6 +424,28 @@ export function extractSalary(text = '', structured = null) {
     }
   }
 
+  // Annual INR CTC in lakh notation: "₹ 3,50,000 - 5,00,000", "INR 12,00,000 per annum"
+  const inrAnnualRx =
+    /(?:₹|INR|Rs\.?)\s*(\d{1,2},\d{2},\d{3}|\d{6,7})(?:\s*(?:-|–|—|to)\s*(?:₹|INR|Rs\.?)?\s*(\d{1,2},\d{2},\d{3}|\d{6,7}))?(?!\s*(?:\/\s*mo|per\s+month|p\.?\s*m\.?|monthly))/gi;
+  while ((match = inrAnnualRx.exec(content)) !== null) {
+    const a1 = Number(match[1].replace(/,/g, ''));
+    const a2 = Number((match[2] || match[1]).replace(/,/g, ''));
+    const ctx = content.slice(Math.max(0, match.index - 40), match.index + match[0].length + 40);
+    if (/\b(raised|funding|series\s+[a-e]|valuation|revenue|crore)\b/i.test(ctx)) continue;
+    if (a1 >= 100000 && a2 >= a1 && a2 <= 9500000) {
+      return {
+        min: a1,
+        max: a2,
+        currency: 'INR',
+        period: 'year',
+        raw: match[0].trim(),
+        estimated: false,
+        confidence: 'high',
+        basis: 'Listed INR annual CTC in job post',
+      };
+    }
+  }
+
   const fxMonthlyRx =
     /([$£€])\s*(\d{1,2}(?:,\d{3})+|\d{1,2}(?:\.\d)?\s*[kK])(?:\s*(?:-|–|—|to)\s*([$£€])?\s*(\d{1,2}(?:,\d{3})+|\d{1,2}(?:\.\d)?\s*[kK]))?\s*(?:\/\s*mo(?:nth)?|per\s+month|monthly)/gi;
   while ((match = fxMonthlyRx.exec(content)) !== null) {
@@ -490,232 +512,46 @@ export function extractSalary(text = '', structured = null) {
   return { min: null, max: null, currency: 'USD', period: 'year', raw: '', estimated: false, confidence: 'none', basis: '' };
 }
 
-// Researched Company Monthly Stipend Benchmarks (Levels.fyi / AmbitionBox / Glassdoor 2025-2026)
-// Values are [monthlyMin, monthlyMax] in local currency (INR for India, USD for Global/US).
-const COMPANY_STIPEND_BENCHMARKS = {
-  stripe: { inr: { intern: [120000, 160000], junior: [200000, 280000] }, usd: { intern: [8500, 10800], junior: [13000, 16500] } },
-  rubrik: { inr: { intern: [150000, 200000], junior: [220000, 300000] }, usd: { intern: [8500, 10500], junior: [12500, 16000] } },
-  databricks: { inr: { intern: [125000, 175000], junior: [220000, 310000] }, usd: { intern: [9000, 11500], junior: [13500, 17500] } },
-  openai: { inr: { intern: [150000, 220000], junior: [250000, 360000] }, usd: { intern: [10000, 13500], junior: [15000, 21000] } },
-  anthropic: { inr: { intern: [150000, 220000], junior: [250000, 360000] }, usd: { intern: [10000, 13000], junior: [15000, 20500] } },
-  singlestore: { inr: { intern: [70000, 120000], junior: [140000, 210000] }, usd: { intern: [6500, 9000], junior: [10500, 14000] } },
-  hackerrank: { inr: { intern: [50000, 90000], junior: [100000, 155000] }, usd: { intern: [5500, 7800], junior: [9500, 12800] } },
-  enterpret: { inr: { intern: [50000, 85000], junior: [115000, 175000] }, usd: { intern: [6000, 8500], junior: [10000, 13500] } },
-  'hevo data': { inr: { intern: [35000, 65000], junior: [95000, 145000] }, usd: { intern: [4500, 7000], junior: [8500, 11500] } },
-  zeta: { inr: { intern: [40000, 75000], junior: [110000, 175000] }, usd: { intern: [5000, 7500], junior: [9000, 12500] } },
-  aiprise: { inr: { intern: [40000, 70000], junior: [100000, 160000] }, usd: { intern: [5000, 7500], junior: [9500, 13000] } },
-  cynlr: { inr: { intern: [35000, 65000], junior: [90000, 150000] }, usd: { intern: [4500, 7000], junior: [8500, 12000] } },
-  commure: { inr: { intern: [50000, 85000], junior: [120000, 185000] }, usd: { intern: [6500, 9000], junior: [11000, 14500] } },
-  composio: { inr: { intern: [45000, 80000], junior: [110000, 170000] }, usd: { intern: [5500, 8500], junior: [10000, 14000] } },
-  figma: { inr: { intern: [110000, 150000], junior: [180000, 260000] }, usd: { intern: [8500, 11000], junior: [12500, 16500] } },
-  coinbase: { inr: { intern: [100000, 145000], junior: [180000, 255000] }, usd: { intern: [8500, 11000], junior: [12500, 16000] } },
-  cloudflare: { inr: { intern: [65000, 105000], junior: [135000, 195000] }, usd: { intern: [7000, 9500], junior: [11000, 14500] } },
-  vercel: { inr: { intern: [75000, 120000], junior: [150000, 220000] }, usd: { intern: [7500, 10000], junior: [11500, 15500] } },
-  datadog: { inr: { intern: [75000, 115000], junior: [145000, 210000] }, usd: { intern: [7500, 10000], junior: [11500, 15000] } },
-  mongodb: { inr: { intern: [70000, 110000], junior: [140000, 205000] }, usd: { intern: [7500, 9800], junior: [11000, 14500] } },
-  elastic: { inr: { intern: [60000, 95000], junior: [130000, 190000] }, usd: { intern: [6500, 9000], junior: [10000, 13800] } },
-  linear: { inr: { intern: [80000, 125000], junior: [160000, 230000] }, usd: { intern: [8000, 10500], junior: [12500, 16500] } },
-  ramp: { inr: { intern: [85000, 130000], junior: [165000, 240000] }, usd: { intern: [8500, 11000], junior: [12500, 16500] } },
-  perplexity: { inr: { intern: [100000, 150000], junior: [185000, 270000] }, usd: { intern: [9000, 12000], junior: [13500, 18500] } },
-  supabase: { inr: { intern: [65000, 105000], junior: [135000, 200000] }, usd: { intern: [6500, 9000], junior: [10500, 14500] } },
-  notion: { inr: { intern: [85000, 125000], junior: [160000, 230000] }, usd: { intern: [8000, 10500], junior: [12500, 16000] } },
-  'scale ai': { inr: { intern: [95000, 140000], junior: [175000, 250000] }, usd: { intern: [8500, 11500], junior: [13000, 17500] } },
-  palantir: { inr: { intern: [90000, 135000], junior: [170000, 245000] }, usd: { intern: [8500, 11000], junior: [12500, 16500] } },
-  spotify: { inr: { intern: [70000, 110000], junior: [140000, 200000] }, usd: { intern: [7000, 9500], junior: [11000, 14500] } },
-  visa: { inr: { intern: [60000, 95000], junior: [125000, 185000] }, usd: { intern: [6500, 8800], junior: [10000, 13500] } },
-  servicenow: { inr: { intern: [60000, 95000], junior: [125000, 185000] }, usd: { intern: [6500, 8800], junior: [10000, 13500] } },
-  brex: { inr: { intern: [80000, 120000], junior: [155000, 225000] }, usd: { intern: [8000, 10500], junior: [12000, 16000] } },
-  robinhood: { inr: { intern: [80000, 120000], junior: [155000, 225000] }, usd: { intern: [8000, 10500], junior: [12000, 16000] } },
-  discord: { inr: { intern: [80000, 120000], junior: [155000, 225000] }, usd: { intern: [8000, 10500], junior: [12000, 16000] } },
-  reddit: { inr: { intern: [75000, 115000], junior: [150000, 215000] }, usd: { intern: [7800, 10200], junior: [12000, 15800] } },
-  duolingo: { inr: { intern: [75000, 115000], junior: [150000, 215000] }, usd: { intern: [7800, 10200], junior: [12000, 15500] } },
-  instacart: { inr: { intern: [75000, 115000], junior: [150000, 215000] }, usd: { intern: [7800, 10200], junior: [12000, 15500] } },
-  airtable: { inr: { intern: [75000, 115000], junior: [150000, 215000] }, usd: { intern: [7800, 10200], junior: [12000, 15500] } },
-  asana: { inr: { intern: [70000, 110000], junior: [140000, 205000] }, usd: { intern: [7500, 9800], junior: [11500, 15000] } },
-  gitlab: { inr: { intern: [60000, 95000], junior: [125000, 185000] }, usd: { intern: [6200, 8500], junior: [9800, 13500] } },
-  gusto: { inr: { intern: [65000, 100000], junior: [135000, 195000] }, usd: { intern: [7000, 9200], junior: [10800, 14200] } },
-  elevenlabs: { inr: { intern: [80000, 130000], junior: [160000, 240000] }, usd: { intern: [8000, 11000], junior: [12500, 17000] } },
-  replit: { inr: { intern: [75000, 120000], junior: [150000, 220000] }, usd: { intern: [7500, 10500], junior: [12000, 16000] } },
-  langchain: { inr: { intern: [75000, 120000], junior: [150000, 220000] }, usd: { intern: [7500, 10000], junior: [11500, 15500] } },
-  cohere: { inr: { intern: [75000, 120000], junior: [150000, 220000] }, usd: { intern: [7500, 10000], junior: [11500, 15500] } },
-  modal: { inr: { intern: [80000, 125000], junior: [160000, 230000] }, usd: { intern: [8000, 11000], junior: [12500, 16500] } },
-  vanta: { inr: { intern: [70000, 110000], junior: [140000, 200000] }, usd: { intern: [7200, 9500], junior: [11000, 14500] } },
-  posthog: { inr: { intern: [65000, 105000], junior: [135000, 195000] }, usd: { intern: [6500, 9000], junior: [10500, 14000] } },
-  deel: { inr: { intern: [55000, 90000], junior: [120000, 180000] }, usd: { intern: [5500, 8000], junior: [9000, 12500] } },
-  canonical: { inr: { intern: [45000, 75000], junior: [100000, 155000] }, usd: { intern: [4500, 7000], junior: [8000, 11500] } },
-  zoox: { inr: { intern: [85000, 125000], junior: [160000, 230000] }, usd: { intern: [8000, 10500], junior: [12000, 16000] } },
-  'grafana labs': { inr: { intern: [65000, 105000], junior: [135000, 195000] }, usd: { intern: [6500, 9000], junior: [10500, 14000] } },
-  'cockroach labs': { inr: { intern: [75000, 115000], junior: [150000, 215000] }, usd: { intern: [7500, 10000], junior: [11500, 15000] } },
-  sourcegraph: { inr: { intern: [65000, 105000], junior: [135000, 195000] }, usd: { intern: [6500, 9000], junior: [10500, 14000] } },
-  meesho: { inr: { intern: [45000, 75000], junior: [130000, 190000] }, usd: { intern: [4500, 7000], junior: [9000, 13000] } },
-  cred: { inr: { intern: [70000, 105000], junior: [150000, 225000] }, usd: { intern: [5500, 8500], junior: [10000, 14500] } },
-  groww: { inr: { intern: [50000, 85000], junior: [130000, 195000] }, usd: { intern: [4800, 7500], junior: [9000, 13000] } },
-  sarvam: { inr: { intern: [55000, 100000], junior: [135000, 215000] }, usd: { intern: [5500, 8500], junior: [10000, 14500] } },
-  bolna: { inr: { intern: [40000, 75000], junior: [100000, 160000] }, usd: { intern: [4500, 7200], junior: [8500, 12500] } },
-  smallest: { inr: { intern: [45000, 85000], junior: [110000, 175000] }, usd: { intern: [5000, 8000], junior: [9000, 13500] } },
-  broccoli: { inr: { intern: [50000, 90000], junior: [120000, 185000] }, usd: { intern: [5500, 8500], junior: [9500, 13500] } },
-  inmobi: { inr: { intern: [45000, 75000], junior: [110000, 170000] }, usd: { intern: [5000, 7800], junior: [9500, 13000] } },
-  devrev: { inr: { intern: [65000, 105000], junior: [145000, 220000] }, usd: { intern: [6500, 9500], junior: [11000, 15500] } },
-  'observe.ai': { inr: { intern: [45000, 80000], junior: [110000, 170000] }, usd: { intern: [5500, 8200], junior: [9500, 13500] } },
-  highradius: { inr: { intern: [30000, 55000], junior: [75000, 120000] }, usd: { intern: [4000, 6500], junior: [7500, 10500] } },
-  zenoti: { inr: { intern: [35000, 60000], junior: [85000, 135000] }, usd: { intern: [4500, 6800], junior: [8000, 11500] } },
-  druva: { inr: { intern: [45000, 75000], junior: [110000, 170000] }, usd: { intern: [5500, 8000], junior: [9500, 13500] } },
-  pubmatic: { inr: { intern: [40000, 68000], junior: [95000, 145000] }, usd: { intern: [5000, 7500], junior: [9000, 12500] } },
-  paytm: { inr: { intern: [35000, 65000], junior: [95000, 150000] }, usd: { intern: [4000, 6500], junior: [7500, 11000] } },
-  rippling: { inr: { intern: [95000, 135000], junior: [175000, 255000] }, usd: { intern: [8500, 11200], junior: [13000, 17000] } },
-  okta: { inr: { intern: [65000, 105000], junior: [135000, 200000] }, usd: { intern: [7200, 9600], junior: [11500, 15200] } },
-  zscaler: { inr: { intern: [60000, 100000], junior: [130000, 195000] }, usd: { intern: [6800, 9200], junior: [11000, 14800] } },
-  'pure storage': { inr: { intern: [70000, 115000], junior: [145000, 215000] }, usd: { intern: [7500, 10000], junior: [12000, 15800] } },
-  fivetran: { inr: { intern: [60000, 95000], junior: [130000, 190000] }, usd: { intern: [6800, 9200], junior: [11000, 14500] } },
-  twilio: { inr: { intern: [65000, 105000], junior: [135000, 200000] }, usd: { intern: [7000, 9500], junior: [11500, 15000] } },
-  toast: { inr: { intern: [55000, 90000], junior: [120000, 180000] }, usd: { intern: [6200, 8800], junior: [10200, 13800] } },
-  tenstorrent: { inr: { intern: [70000, 115000], junior: [140000, 210000] }, usd: { intern: [7500, 10200], junior: [11800, 15500] } },
-  waymo: { inr: { intern: [110000, 155000], junior: [195000, 280000] }, usd: { intern: [9000, 12000], junior: [14000, 18500] } },
-  cursor: { inr: { intern: [120000, 175000], junior: [210000, 300000] }, usd: { intern: [9500, 13000], junior: [14500, 20000] } },
-  cognition: { inr: { intern: [115000, 170000], junior: [200000, 290000] }, usd: { intern: [9500, 12800], junior: [14500, 19500] } },
-  harvey: { inr: { intern: [90000, 135000], junior: [170000, 250000] }, usd: { intern: [8500, 11500], junior: [13000, 17500] } },
-  sierra: { inr: { intern: [95000, 140000], junior: [175000, 255000] }, usd: { intern: [8800, 11800], junior: [13500, 18000] } },
-  'together ai': { inr: { intern: [85000, 130000], junior: [165000, 240000] }, usd: { intern: [8200, 11000], junior: [12500, 17000] } },
-  baseten: { inr: { intern: [80000, 125000], junior: [160000, 235000] }, usd: { intern: [8000, 10800], junior: [12200, 16500] } },
-  clickhouse: { inr: { intern: [75000, 120000], junior: [150000, 225000] }, usd: { intern: [7800, 10500], junior: [12000, 16200] } },
-  exa: { inr: { intern: [75000, 120000], junior: [150000, 220000] }, usd: { intern: [7800, 10500], junior: [12000, 16000] } },
-  deepgram: { inr: { intern: [70000, 110000], junior: [140000, 205000] }, usd: { intern: [7200, 9800], junior: [11200, 15000] } },
-  bosch: { inr: { intern: [30000, 55000], junior: [75000, 125000] }, usd: { intern: [4500, 6800], junior: [7800, 11000] } },
-  grab: { inr: { intern: [65000, 105000], junior: [140000, 210000] }, usd: { intern: [6000, 8800], junior: [9500, 13500] } },
-  wise: { inr: { intern: [55000, 90000], junior: [120000, 185000] }, usd: { intern: [5500, 8200], junior: [9000, 12800] } },
-  'western digital': { inr: { intern: [45000, 75000], junior: [100000, 155000] }, usd: { intern: [5500, 7800], junior: [9000, 12500] } },
-  nielseniq: { inr: { intern: [30000, 55000], junior: [70000, 115000] }, usd: { intern: [4000, 6200], junior: [7200, 10200] } },
-  shopify: { inr: { intern: [80000, 120000], junior: [150000, 215000] }, usd: { intern: [7500, 10000], junior: [11500, 15500] } },
-};
-
-function fmtMonthlyToken(val, currency) {
-  if (currency === 'INR') {
-    if (val >= 100000) return `₹${(val / 100000).toFixed(val % 100000 === 0 ? 0 : 1)}L`;
-    return `₹${Math.round(val / 1000)}k`;
-  }
-  const sym = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$';
-  if (val >= 1000) return `${sym}${(val / 1000).toFixed(val % 1000 === 0 ? 0 : 1)}k`;
-  return `${sym}${val}`;
-}
-
-export function estimateStipendBenchmark({
-  title = '',
-  company = '',
-  location = '',
-  workMode = '',
-  seniority = 'junior',
-  sourceType = '',
-} = {}) {
-  const locTier = classifyLocationTier(location, workMode, '');
-  const isIndia = locTier === 'bangalore' || locTier === 'india';
-  const currency = isIndia ? 'INR' : 'USD';
-
-  const compLower = String(company || '').toLowerCase().trim();
-  const titleLower = String(title || '').toLowerCase();
-  const isTechRole = /\b(engineer|developer|software|sde|swe|ai|ml|machine\s+learning|data|research|scientist|devops|sre|security|frontend|backend|full[- ]stack|mobile|ios|android|cloud|robotics|embedded|quant)\b/i.test(titleLower);
-  const roleFactor = isTechRole ? 1.0 : 0.62;
-
-  const isTier1Source = ['greenhouse', 'ashby', 'lever', 'smartrecruiters', 'rippling', 'pinpoint', 'yc', 'hackernews', 'simplify'].includes(sourceType);
-
-  let matchedCompanyKey = null;
-  for (const key of Object.keys(COMPANY_STIPEND_BENCHMARKS)) {
-    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const rx = new RegExp(`(?:^|\\b)${escapedKey}(?:\\b|$)`, 'i');
-    if (compLower === key || rx.test(compLower)) {
-      matchedCompanyKey = key;
-      break;
-    }
-  }
-
-  let levelKey = 'junior';
-  if (seniority === 'intern') levelKey = 'intern';
-  else if (seniority === 'junior') levelKey = 'junior';
-  else levelKey = 'senior';
-
-  let monthlyRange;
-  let sourceLabel;
-  let confidence = 'low';
-  let basis = '';
-
-  if (matchedCompanyKey) {
-    const entry = COMPANY_STIPEND_BENCHMARKS[matchedCompanyKey][isIndia ? 'inr' : 'usd'];
-    const base = entry[levelKey === 'intern' ? 'intern' : 'junior'];
-    const seniorScale = levelKey === 'senior' ? 1.55 : 1.0;
-    monthlyRange = [
-      Math.round((base[0] * roleFactor * seniorScale) / 1000) * 1000,
-      Math.round((base[1] * roleFactor * seniorScale) / 1000) * 1000,
-    ];
-    sourceLabel = 'Levels.fyi / AmbitionBox est.';
-    confidence = 'med';
-    basis = `Company benchmark (${matchedCompanyKey}, ${isIndia ? 'India INR' : 'Global USD'})`;
-  } else if (isIndia) {
-    if (levelKey === 'intern') {
-      monthlyRange = isTier1Source ? [35000, 65000] : [22000, 45000];
-    } else if (levelKey === 'junior') {
-      monthlyRange = isTier1Source ? [80000, 140000] : [45000, 85000];
-    } else {
-      monthlyRange = [150000, 300000];
-    }
-    monthlyRange = [
-      Math.round((monthlyRange[0] * roleFactor) / 1000) * 1000,
-      Math.round((monthlyRange[1] * roleFactor) / 1000) * 1000,
-    ];
-    sourceLabel = 'Bengaluru/India market est.';
-    confidence = 'low';
-    basis = `${isTier1Source ? 'Tier-1 ATS ' : ''}India ${levelKey} ${isTechRole ? 'tech' : 'non-tech'} market est.`;
-  } else {
-    if (levelKey === 'intern') {
-      monthlyRange = isTier1Source ? [4500, 7500] : [2200, 4200];
-    } else if (levelKey === 'junior') {
-      monthlyRange = isTier1Source ? [7500, 11500] : [4200, 7200];
-    } else {
-      monthlyRange = [9500, 15500];
-    }
-    monthlyRange = [
-      Math.round((monthlyRange[0] * roleFactor) / 100) * 100,
-      Math.round((monthlyRange[1] * roleFactor) / 100) * 100,
-    ];
-    sourceLabel = 'Global market est.';
-    confidence = 'low';
-    basis = `${isTier1Source ? 'Tier-1 ATS ' : ''}Global ${levelKey} ${isTechRole ? 'tech' : 'non-tech'} market est.`;
-  }
-
-  const minAnnual = Math.round(monthlyRange[0] * 12);
-  const maxAnnual = Math.round(monthlyRange[1] * 12);
-  const raw = `${fmtMonthlyToken(monthlyRange[0], currency)}–${fmtMonthlyToken(monthlyRange[1], currency)}/mo (${sourceLabel})`;
-
-  return {
-    min: minAnnual,
-    max: maxAnnual,
-    currency,
-    period: 'year',
-    raw,
-    estimated: true,
-    confidence,
-    basis,
-  };
-}
+// Geographic eligibility for an India-based candidate.
+//   bangalore          — Bengaluru (onsite/hybrid/remote)
+//   india              — elsewhere in India
+//   remote             — remote and open to India (India-remote, worldwide, APAC, or unrestricted)
+//   remote_restricted  — remote, but limited to another country/region (e.g. "Remote - US")
+//   abroad             — onsite/hybrid outside India
+//   unknown            — no usable location
+const INDIA_CITY_RX = /\b(india|hyderabad|pune|mumbai|gurgaon|gurugram|noida|chennai|delhi|ncr|kolkata|ahmedabad|kochi|jaipur|indore|chandigarh|coimbatore|thiruvananthapuram|trivandrum|mysore|mysuru|bhubaneswar|nagpur|vadodara|lucknow)\b/i;
+const GLOBAL_REMOTE_RX = /\b(anywhere|worldwide|world\s*wide|global(ly)?|international|apac|asia|any\s+location|all\s+locations|work\s+from\s+home|wfh)\b/i;
+const FOREIGN_REGION_RX = /\b(us|u\.s\.?|usa|united\s+states|america|americas|north\s+america|latam|latin\s+america|canada|mexico|brazil|argentina|colombia|chile|uk|u\.k\.|united\s+kingdom|england|london|ireland|europe|european|eu|emea|germany|france|spain|portugal|netherlands|poland|romania|sweden|switzerland|italy|cet|est|pst|australia|new\s+zealand|anz|japan|singapore|philippines|south\s+africa|nigeria|kenya|israel|dubai|uae|[a-z .]+,\s*(ca|ny|wa|tx|ma|co|il|ga|nc|va|fl|or|az|pa|nj|ut|mn|mi|oh|md|dc))\b/i;
+const BODY_RESTRICTION_RX = /\b(must|should|need\s+to|required\s+to)\s+(be\s+)?(located|based|reside|residing|live)\s+in\s+(the\s+)?(us|u\.s\.|usa|united\s+states|canada|uk|united\s+kingdom|europe|eu)\b|\b(us|usa|u\.s\.|uk|eu|canada)[- ]only\b|\bauthori[sz]ed\s+to\s+work\s+in\s+the\s+(us|u\.s\.|united\s+states)\b/i;
 
 export function classifyLocationTier(location = '', workMode = '', text = '') {
-  const loc = String(location || '');
-  const bodyHead = String(text || '').slice(0, 1200);
-  if (/\b(bangalore|bengaluru|blr|karnataka)\b/i.test(loc)) {
-    return 'bangalore';
+  const loc = String(location || '').trim();
+  const bodyHead = String(text || '').slice(0, 2500);
+  if (/\b(bangalore|bengaluru|blr|karnataka)\b/i.test(loc)) return 'bangalore';
+  const isRemote = workMode === 'remote' || /\b(remote|anywhere|worldwide|wfh|work\s+from\s+home|distributed)\b/i.test(loc);
+  if (INDIA_CITY_RX.test(loc)) {
+    if (/\b(bangalore|bengaluru)\b/i.test(bodyHead) && /^\s*india\s*$/i.test(loc)) return 'bangalore';
+    return isRemote ? 'remote' : 'india';
   }
-  if (/\bindia\b/i.test(loc) && !/\b(indiana|indianapolis)\b/i.test(loc) && /\b(bangalore|bengaluru)\b/i.test(bodyHead)) {
-    return 'bangalore';
-  }
-  if (workMode === 'remote' || /\b(remote|anywhere|worldwide|wfh|work\s+from\s+home|distributed)\b/i.test(loc)) {
+
+  if (isRemote) {
+    // Strip remote markers so "Remote" itself is never read as a region
+    const regionPart = loc.replace(/\b(remote|fully|100%|work\s+from\s+home|wfh|distributed|hybrid|onsite|on-site|job)\b/gi, ' ');
+    const scopedAnywhere = /\banywhere\s+in\s+(?!the\s+world)/i.test(loc);
+    if (GLOBAL_REMOTE_RX.test(loc) && !scopedAnywhere) return 'remote';
+    if (FOREIGN_REGION_RX.test(regionPart)) return 'remote_restricted';
+    if (BODY_RESTRICTION_RX.test(bodyHead)) return 'remote_restricted';
+    // A remote role that names a specific non-Indian city ("San Francisco / Remote") is almost always country-bound
+    if (/[a-z]{3,}/i.test(regionPart.replace(/[^a-z\s]/gi, ' ').trim())) return 'remote_restricted';
     return 'remote';
   }
-  if (
-    !/\b(indiana|indianapolis)\b/i.test(loc) &&
-    /\b(india|hyderabad|pune|mumbai|gurgaon|gurugram|noida|chennai|delhi|ncr|kolkata|ahmedabad|kochi)\b/i.test(loc)
-  ) {
-    return 'india';
-  }
-  return 'global';
+
+  if (!loc || /^(unspecified|n\/a|tbd|multiple locations?|various)$/i.test(loc)) return 'unknown';
+  return 'abroad';
 }
+
+/** Tiers a candidate based in India can realistically apply to. */
+export const ELIGIBLE_LOCATION_TIERS = ['bangalore', 'india', 'remote', 'unknown'];
 
 export function classifyRoleCategory(title = '', department = '', text = '') {
   const titleStr = String(title || '').trim();
@@ -768,7 +604,8 @@ export function classifyRoleCategory(title = '', department = '', text = '') {
 }
 
 export function extractExperience(text = '', title = '') {
-  const titleStr = String(title || '');
+  // Underscores ("Java Lead_Vice President") would otherwise defeat \b word boundaries
+  const titleStr = String(title || '').replace(/_/g, ' ');
   const content = String(text || '');
 
   // Extract Years of Experience (YOE)
@@ -787,7 +624,11 @@ export function extractExperience(text = '', title = '') {
       maxYoe = b;
     }
   } else {
-    const mMatch = yoeMinRx.exec(content);
+    // "3+ years …", then plus-less forms: "minimum 2 years", "0 years of experience"
+    const mMatch =
+      yoeMinRx.exec(content) ||
+      /(?:minimum\s+(?:of\s+)?|at\s+least\s+|requires?\s+)(\d{1,2})\s*years?\b/i.exec(content) ||
+      /\b(\d{1,2})\s*years?\s+of\s+(?:\w+\s+){0,2}experience\b/i.exec(content);
     if (mMatch) {
       const a = Number(mMatch[1]);
       if (a >= 0 && a <= 20) {
@@ -842,9 +683,9 @@ export function extractExperience(text = '', title = '') {
     else if (minYoe <= 4) seniority = 'mid';
     else if (minYoe <= 7) seniority = 'senior';
     else seniority = 'staff';
-  } else if (/\b(engineer|developer|designer|analyst|scientist|product\s+manager)\b/i.test(titleStr)) {
-    seniority = 'mid';
   }
+  // A plain "Software Engineer" with no stated experience stays 'unknown' rather than an assumed 'mid':
+  // startups and Indian product companies often hire freshers into such roles without saying so.
 
   return { min: minYoe, max: maxYoe, seniority };
 }

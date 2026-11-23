@@ -1,5 +1,6 @@
 import { detectAllAtsFromText } from './fingerprinter.js';
 import { buildConfigForAts, upsertSourceCandidate, upsertJobsBatch } from '../db.js';
+import { classifyLocationTier, ELIGIBLE_LOCATION_TIERS } from '../nlp.js';
 
 const PORTAL_DOMAINS = /(?:linkedin\.com|wellfound\.com|naukri\.com|instahyre\.com|cutshort\.io|news\.ycombinator\.com|github\.com)/i;
 const DIRECT_ATS_TYPES = new Set([
@@ -102,7 +103,14 @@ export async function verifyPendingCandidates(db, { scrapeFn = null, limit = 5 }
     try {
       const fetched = await resolveAdapter(tempSource);
       const valid = Array.isArray(fetched) ? fetched.filter((j) => j && j.title && j.apply_url) : [];
-      if (valid.length >= 1) {
+      // Only promote boards that list at least one role reachable from India (India / BLR / open remote).
+      // Otherwise discovery floods the DB with US/EU-only companies that never surface in the feed.
+      const reachable = valid.filter((j) =>
+        ELIGIBLE_LOCATION_TIERS.includes(classifyLocationTier(j.location, j.work_mode, j.description_text))
+      );
+      if (valid.length >= 1 && reachable.length === 0) {
+        db.prepare("UPDATE source_candidates SET status = 'rejected', last_checked_at = ?, jobs_found = ? WHERE id = ?").run(now, valid.length, cand.id);
+      } else if (valid.length >= 1) {
         db.prepare(`
           INSERT INTO sources (id, name, type, tier, config, enabled, scrape_interval_mins, last_scraped_at, last_status, jobs_found_last)
           VALUES (?, ?, ?, ?, ?, 1, 45, ?, 'success', ?)

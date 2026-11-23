@@ -275,21 +275,46 @@ export async function scrapeWeWorkRemotely(source) {
   return items;
 }
 
+const HN_LOCATION_HINT_RX =
+  /\b(remote|onsite|on-site|in-office|hybrid|anywhere|worldwide|global|india|bangalore|bengaluru|hyderabad|pune|mumbai|delhi|gurgaon|noida|chennai|usa?|united\s+states|canada|uk|europe|eu|emea|apac|asia|london|berlin|paris|amsterdam|dublin|toronto|vancouver|singapore|sydney|nyc|new\s+york|sf|san\s+francisco|bay\s+area|seattle|boston|austin|chicago|los\s+angeles|denver|[A-Z][a-z]+,\s*[A-Z]{2}\b)/i;
+const HN_ROLE_RX =
+  /\b(engineers?|developers?|scientists?|designers?|sre|devops|intern(ship)?s?|architects?|programmers?|founding|full[- ]?stack|back[- ]?end|front[- ]?end|swe|sde|mts|technical\s+staff|roles|positions)\b/i;
+const HN_NOT_LOCATION_RX = /\b(full[- ]?time|part[- ]?time|contract|visa|equity|salary|engineer|developer|designer|manager|scientist|intern)\b/i;
+
+/** The poster's HN profile plus any hiring email written in the post ("jobs@x.com", "jobs [at] x [dot] com"). */
+export function extractHnContacts(comment = {}, plain = '') {
+  const contacts = [];
+  const text = String(plain || '')
+    .replace(/\s*[[(]\s*at\s*[\])]\s*/gi, '@')
+    .replace(/\s*[[(]\s*dot\s*[\])]\s*/gi, '.');
+  const emails = [...new Set(text.match(/[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi) || [])].slice(0, 2);
+  for (const e of emails) contacts.push({ name: e, role: 'Hiring email', url: `mailto:${e}`, kind: 'email' });
+  if (comment.author) {
+    contacts.push({ name: comment.author, role: 'Posted on HN', url: `https://news.ycombinator.com/user?id=${encodeURIComponent(comment.author)}`, kind: 'hn' });
+  }
+  return contacts;
+}
+
 export async function scrapeHackerNewsWhoIsHiring(source) {
   const opts = aggOpts(source);
   const searchData = await fetchJson(
-    'https://hn.algolia.com/api/v1/search_by_date?query=%22Ask%20HN:%20Who%20is%20hiring%22&tags=story,ask_hn&hitsPerPage=5',
+    'https://hn.algolia.com/api/v1/search_by_date?query=%22Ask%20HN:%20Who%20is%20hiring%22&tags=story,ask_hn,author_whoishiring&hitsPerPage=5',
     opts
   );
   const hits = Array.isArray(searchData?.hits) ? searchData.hits : [];
-  const story = hits.find((h) => /who is hiring/i.test(h.title || '')) || hits[0];
+  // The real monthly thread is always posted by the official `whoishiring` account; anyone else's
+  // "Who is hiring?" post (jokes, niche spin-offs) would otherwise win on recency.
+  const story =
+    hits.find((h) => h.author === 'whoishiring' && /who is hiring/i.test(h.title || '')) ||
+    hits.find((h) => /^ask hn: who is hiring\?\s*\(/i.test(h.title || ''));
   if (!story?.objectID) return [];
 
   const itemData = await fetchJson(`https://hn.algolia.com/api/v1/items/${story.objectID}`, opts);
   const children = Array.isArray(itemData?.children) ? itemData.children : [];
 
   const jobs = [];
-  for (const comment of children.slice(0, 120)) {
+  // Read the whole thread (typically 400–600 top-level posts), not just the first page
+  for (const comment of children) {
     if (!comment?.text) continue;
     const plain = stripHtmlToText(comment.text);
     const firstLine = plain.split('\n').find((l) => l.trim().length > 4) || '';
@@ -298,13 +323,19 @@ export async function scrapeHackerNewsWhoIsHiring(source) {
     // Standard HN format: Company | Role | Location | Salary | URL
     const parts = firstLine.split('|').map((p) => p.trim()).filter(Boolean);
     const company = parts[0] && parts[0].length <= 60 ? parts[0] : `HN Startup (${comment.author || 'Anon'})`;
-    const role = parts[1] && parts[1].length <= 100 ? parts[1] : 'Software / Engineering Role';
+    // Posts don't keep a fixed field order: pick the field that reads like a role, never a URL or location
+    const fields = parts.slice(1).filter((p) => p.length <= 100 && !/^(https?:\/\/|www\.)/i.test(p));
+    const role =
+      fields.find((p) => HN_ROLE_RX.test(p)) ||
+      fields.find((p) => !HN_LOCATION_HINT_RX.test(p) && !/^(full[- ]?time|part[- ]?time|contract)$/i.test(p)) ||
+      'Software / Engineering Role';
     const locationParts = parts
-      .slice(2)
-      .filter((p) => !/^https?:\/\//i.test(p) && !/^\$\d/.test(p))
-      .map((p) => p.split(/\.\s+/)[0].slice(0, 48).trim())
+      .slice(1)
+      .filter((p) => !/^https?:\/\//i.test(p) && !/[$€£₹]\s*\d/.test(p))
+      .filter((p) => HN_LOCATION_HINT_RX.test(p) && !HN_NOT_LOCATION_RX.test(p))
+      .map((p) => p.split(/\.\s+/)[0].slice(0, 60).trim())
       .filter(Boolean);
-    const rawLoc = locationParts.join(' • ') || (/remote/i.test(plain) ? 'Remote' : 'Unspecified');
+    const rawLoc = locationParts.join(' • ') || (/\bremote\b/i.test(firstLine) ? 'Remote' : 'Unspecified');
     const location = rawLoc.length > 75 ? `${rawLoc.slice(0, 72)}...` : rawLoc;
 
     // Extract URL inside comment text if any, otherwise link directly to HN comment
@@ -324,37 +355,11 @@ export async function scrapeHackerNewsWhoIsHiring(source) {
         applyUrl,
         companyUrl: `https://news.ycombinator.com/item?id=${comment.id}`,
         postedAt: comment.created_at || story.created_at || null,
+        contacts: extractHnContacts(comment, plain),
       })
     );
   }
   return jobs;
-}
-
-export async function scrapeYCJobs(source) {
-  const data = await fetchJson('https://hn.algolia.com/api/v1/search_by_date?tags=job&hitsPerPage=60', aggOpts(source));
-  const hits = Array.isArray(data?.hits) ? data.hits : [];
-
-  return hits
-    .filter((h) => h.title)
-    .map((hit) => {
-      // Often formatted as "Company (YC S22) Is Hiring a Senior Engineer"
-      const m = /^(.+?)\s+(?:\(YC [^)]+\)\s+)?(?:is|are)\s+hiring\s+(?:an?\s+)?(.+)$/i.exec(hit.title);
-      const company = m ? m[1].trim() : 'Y Combinator Startup';
-      const title = m ? m[2].trim() : hit.title;
-
-      return normalizeJobPayload({
-        sourceId: source.id,
-        sourceType: 'yc',
-        externalId: hit.objectID,
-        title,
-        company,
-        location: /\bremote\b/i.test(hit.title) ? 'Remote' : 'San Francisco / Remote',
-        explicitRemote: /\bremote\b/i.test(hit.title),
-        descriptionHtml: hit.story_text || `<p>${hit.title}</p><p>Posted by Y Combinator company on Hacker News Jobs.</p>`,
-        applyUrl: hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`,
-        postedAt: hit.created_at || null,
-      });
-    });
 }
 
 export async function scrapeSimplifyGithub(source) {
@@ -667,12 +672,18 @@ export function parseInternshalaHtml(html = '', source = {}) {
       const compMatch = /<p[^>]+class="[^"]*company-name[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(block);
       const company = stripHtmlToText(compMatch?.[1] || '') || 'Internshala Employer';
 
-      const locSection = /class="[^"]*row-1-item locations[^"]*"([\s\S]*?)<\/div>/i.exec(block)?.[1] || '';
+      const locSection = /class="[^"]*row-1-item\s+locations[^"]*"([\s\S]*?)<\/(?:p|div)>/i.exec(block)?.[1] || '';
       const locLinks = [...locSection.matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
       const locText = locLinks.join(', ') || stripHtmlToText(locSection) || 'India';
       const isRemote = /work from home|remote/i.test(locText);
 
-      const stipendRaw = stripHtmlToText(/<span[^>]+class=['"]stipend['"][^>]*>([\s\S]*?)<\/span>/i.exec(block)?.[1] || '');
+      // Internship cards use <span class="stipend">; job cards put CTC after an ic-16-money icon
+      const stipendRaw = stripHtmlToText(
+        /<span[^>]+class=['"]stipend['"][^>]*>([\s\S]*?)<\/span>/i.exec(block)?.[1] ||
+          /ic-16-money[^>]*><\/i>\s*<span[^>]*>([\s\S]*?)<\/span>/i.exec(block)?.[1] ||
+          ''
+      );
+      const expRaw = stripHtmlToText(/ic-16-briefcase[^>]*><\/i>\s*<span[^>]*>([\s\S]*?)<\/span>/i.exec(block)?.[1] || '');
       const aboutRaw = stripHtmlToText(/<div[^>]+class="[^"]*about_job[^"]*"[\s\S]*?<div[^>]+class="[^"]*text[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(block)?.[1] || '');
       const skills = [...block.matchAll(/<div[^>]+class=['"]job_skill['"][^>]*>([\s\S]*?)<\/div>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
       const cats = [...block.matchAll(/<div[^>]+class="[^"]*category_name[^"]*"[^>]*>([\s\S]*?)<\/div>/gi)].map((m) => stripHtmlToText(m[1])).filter(Boolean);
@@ -683,7 +694,8 @@ export function parseInternshalaHtml(html = '', source = {}) {
       const title = isIntern && !/\bintern/i.test(rawTitle) ? `${rawTitle} Intern` : rawTitle;
       const descText = [
         aboutRaw,
-        stipendRaw ? `Stipend: ${stipendRaw}` : '',
+        stipendRaw ? `${isIntern ? 'Stipend' : 'Salary'}: ${stipendRaw}${isIntern ? '' : ' per year'}` : '',
+        /\d/.test(expRaw) ? `${expRaw.match(/\d+/)[0]} years of experience required` : '',
         cats.length ? `Categories: ${cats.join(', ')}` : '',
       ]
         .filter(Boolean)
@@ -696,7 +708,8 @@ export function parseInternshalaHtml(html = '', source = {}) {
         title,
         company,
         department: cats[0] || 'Engineering',
-        location: isRemote ? `Remote (${locText})` : locText,
+        // Internshala is India-only; make that explicit so localities ("Goregaon Kh") classify correctly
+        location: isRemote ? `Remote (${locText}), India` : /\bindia\b/i.test(locText) ? locText : `${locText}, India`,
         explicitRemote: isRemote,
         explicitSeniority: isIntern ? 'intern' : 'junior',
         descriptionText: descText,
@@ -709,11 +722,21 @@ export function parseInternshalaHtml(html = '', source = {}) {
 }
 
 export async function scrapeInternshala(source) {
-  const opts = aggOpts(source, 25000);
+  const opts = { ...aggOpts(source, 25000), minGapMs: 700 };
+  // Category pages verified Nov 2026 (~50–100 cards each). Internshala "jobs" are fresher roles (0–2 yrs).
   const urls = [
     'https://internshala.com/internships/computer-science-internship-in-bangalore/',
     'https://internshala.com/internships/work-from-home-computer-science-internships/',
-    'https://internshala.com/jobs/fresher-software-development-jobs/',
+    'https://internshala.com/internships/software-development-internship/',
+    'https://internshala.com/internships/web-development-internship/',
+    'https://internshala.com/internships/full-stack-development-internship/',
+    'https://internshala.com/internships/backend-development-internship/',
+    'https://internshala.com/internships/frontend-development-internship/',
+    'https://internshala.com/jobs/software-development-jobs/',
+    'https://internshala.com/jobs/software-development-jobs-in-bangalore/',
+    'https://internshala.com/jobs/web-development-jobs/',
+    'https://internshala.com/jobs/full-stack-development-jobs/',
+    'https://internshala.com/jobs/backend-development-jobs/',
   ];
   const responses = await Promise.allSettled(urls.map((u) => fetchText(u, opts)));
   const seen = new Set();
@@ -737,7 +760,7 @@ export async function scrapeInternshala(source) {
   return out;
 }
 
-export function parseInstahyreJson(data, source = {}) {
+export function parseInstahyreJson(data, source = {}, explicitSeniority = null) {
   const objects = Array.isArray(data?.objects) ? data.objects : [];
   return objects
     .filter((o) => o && o.title && (o.public_url || o.id))
@@ -761,6 +784,7 @@ export function parseInstahyreJson(data, source = {}) {
         companyLogo: logo,
         location: loc,
         explicitRemote: /\bremote|work from home\b/i.test(loc),
+        explicitSeniority,
         descriptionText: desc,
         tags: keywords,
         applyUrl: o.public_url || `https://www.instahyre.com/job-${o.id}/`,
@@ -769,29 +793,45 @@ export function parseInstahyreJson(data, source = {}) {
     });
 }
 
+// Instahyre's public search API. The useful filters (verified Nov 2026) are
+// `experience_level` (entry_level | internship) and repeated `job_functions` ids:
+//   1 = Full-Stack, 3 = Frontend/Web, 10 = Backend, 76 = Other Software Development.
+// Without them the endpoint returns the full ~44k-job firehose, mostly senior and non-tech.
+// The API rejects (HTTP 400) more than three job_functions per request, hence two groups.
+const INSTAHYRE_SWE_FUNCTION_GROUPS = [[1, 3, 10], [76]];
+
 export async function scrapeInstahyre(source) {
-  const opts = aggOpts(source, 25000);
-  const urls = [
-    'https://www.instahyre.com/api/v1/job_search?company_size=0&experience=0&job_type=0&offset=0',
-    'https://www.instahyre.com/api/v1/job_search?company_size=0&experience=1&job_type=0&offset=0',
-    'https://www.instahyre.com/api/v1/job_search?company_size=0&job_type=0&offset=0',
-  ];
-  const responses = await Promise.allSettled(urls.map((u) => fetchJson(u, opts)));
+  const opts = { ...aggOpts(source, 25000), minGapMs: 1500 };
+  const base = 'https://www.instahyre.com/api/v1/job_search';
+  const queries = [];
+  for (const group of INSTAHYRE_SWE_FUNCTION_GROUPS) {
+    const fn = group.map((id) => `job_functions=${id}`).join('&');
+    for (const off of [0, 35, 70]) {
+      queries.push({ url: `${base}?experience_level=entry_level&${fn}&offset=${off}`, seniority: 'junior', group: `entry-${fn}` });
+    }
+    queries.push({ url: `${base}?experience_level=internship&${fn}&offset=0`, seniority: 'intern', group: `intern-${fn}` });
+  }
   const seen = new Set();
   const out = [];
   let anyOk = false;
   let firstErr = null;
-  for (const r of responses) {
-    if (r.status === 'fulfilled') {
+  const exhausted = new Set();
+  // Sequential: Instahyre rate-limits bursts quickly
+  for (const q of queries) {
+    if (exhausted.has(q.group)) continue;
+    try {
+      const data = await fetchJson(q.url, opts);
       anyOk = true;
-      for (const job of parseInstahyreJson(r.value, source)) {
+      for (const job of parseInstahyreJson(data, source, q.seniority)) {
         if (!seen.has(job.external_id)) {
           seen.add(job.external_id);
           out.push(job);
         }
       }
-    } else if (!firstErr) {
-      firstErr = r.reason;
+      if (!data?.meta?.next) exhausted.add(q.group);
+    } catch (err) {
+      firstErr ??= err;
+      exhausted.add(q.group);
     }
   }
   if (!anyOk && firstErr) throw firstErr;
@@ -871,55 +911,72 @@ export async function scrapeLinkedInGuest(source, options = {}) {
     ).run(JSON.stringify(recentRuns));
   }
 
-  const keywords = options.keywords || ['SDE intern', 'software engineer new grad', 'ML intern', 'data intern', 'devops intern'];
-  const locations = options.locations || ['Bengaluru', 'India', 'Remote'];
+  // Phrased the way Indian postings are titled ("fresher", "SDE 1"), not US "new grad" wording.
+  const keywords = options.keywords || [
+    'software engineer fresher',
+    'SDE 1',
+    'software engineer intern',
+    'frontend developer',
+    'backend developer',
+    'full stack developer',
+  ];
+  const locations = options.locations || ['Bengaluru', 'India'];
+  // Guest search returns 10 cards per page; a second page roughly doubles 24h coverage
+  const pages = options.pages ?? 2;
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const minGapMs = options.delayMs ?? 4000;
   const rawHtmlBlocks = [];
   const candidateMeta = [];
   const seenIds = new Set();
 
+  const searches = [];
   for (const kw of keywords) {
     for (const loc of locations) {
-      const url = `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=${encodeURIComponent(kw)}&location=${encodeURIComponent(loc)}&f_E=1,2&f_TPR=r86400&start=0`;
-      try {
-        const html = await fetchText(url, {
-          timeoutMs: 15000,
-          retries: 0,
-          minGapMs,
-          fetchImpl: fetchFn,
-          sleepImpl: options.sleepImpl,
-          db: null,
-        });
-        rawHtmlBlocks.push(html);
-        for (const card of parseLinkedInGuestCards(html, source)) {
-          if (seenIds.has(card.external_id)) continue;
-          seenIds.add(card.external_id);
-          const exp = extractExperience(card.description_text, card.title);
-          const cat = classifyRoleCategory(card.title, card.department, card.description_text);
-          if ((exp.seniority === 'intern' || exp.seniority === 'junior') && cat !== 'non_tech') {
-            candidateMeta.push(card.external_id);
-          }
-        }
-      } catch (err) {
-        if (/HTTP 429\b/.test(err?.message || '')) {
-          if (db) {
-            db.prepare(
-              "INSERT INTO settings (key, value) VALUES ('linkedin_backoff_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-            ).run(String(Date.now() + 6 * 3600 * 1000));
-          }
-          break;
+      for (let p = 0; p < pages; p++) searches.push({ kw, loc, start: p * 10 });
+    }
+  }
+
+  const exhausted = new Set();
+  for (const { kw, loc, start } of searches) {
+    const searchKey = `${kw}|${loc}`;
+    if (exhausted.has(searchKey)) continue;
+    const url = `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=${encodeURIComponent(kw)}&location=${encodeURIComponent(loc)}&f_E=1,2&f_TPR=r86400&start=${start}`;
+    try {
+      const html = await fetchText(url, {
+        timeoutMs: 15000,
+        retries: 0,
+        minGapMs,
+        fetchImpl: fetchFn,
+        sleepImpl: options.sleepImpl,
+        db: null,
+      });
+      rawHtmlBlocks.push(html);
+      const cards = parseLinkedInGuestCards(html, source);
+      if (cards.length < 10) exhausted.add(searchKey);
+      for (const card of cards) {
+        if (seenIds.has(card.external_id)) continue;
+        seenIds.add(card.external_id);
+        const exp = extractExperience(card.description_text, card.title);
+        const cat = classifyRoleCategory(card.title, card.department, card.description_text);
+        if ((exp.seniority === 'intern' || exp.seniority === 'junior' || exp.seniority === 'unknown') && cat !== 'non_tech') {
+          candidateMeta.push(card.external_id);
         }
       }
-    }
-    if (db) {
-      const backoffAfter = Number(db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get()?.value || 0);
-      if (backoffAfter > Date.now()) break;
+    } catch (err) {
+      if (/HTTP 429\b/.test(err?.message || '')) {
+        if (db) {
+          db.prepare(
+            "INSERT INTO settings (key, value) VALUES ('linkedin_backoff_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+          ).run(String(Date.now() + 6 * 3600 * 1000));
+        }
+        break;
+      }
+      exhausted.add(searchKey);
     }
   }
 
   const detailMap = new Map();
-  const maxDetails = options.maxDetails ?? 10;
+  const maxDetails = options.maxDetails ?? 20;
   for (const id of candidateMeta.slice(0, maxDetails)) {
     if (db) {
       const backoffNow = Number(db.prepare("SELECT value FROM settings WHERE key = 'linkedin_backoff_until'").get()?.value || 0);

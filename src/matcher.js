@@ -183,6 +183,10 @@ export function scoreJobAgainstProfile(job, profile) {
   } else if (locationTier === 'india') {
     locationRatio = Math.max(locationRatio, 0.8);
     locationMatched = 'India';
+  } else if (locationTier === 'abroad' || locationTier === 'remote_restricted') {
+    // Outside India / remote-but-country-locked: not realistically reachable for an India-based fresher
+    locationRatio = 0;
+    modeFit = locationTier;
   } else if (prefLocations.length > 0 && jobLocLower) {
     for (const loc of prefLocations) {
       const l = String(loc).toLowerCase().trim();
@@ -256,26 +260,31 @@ export function scoreJobAgainstProfile(job, profile) {
   const targetCompanies = Array.isArray(profile?.target_companies) ? profile.target_companies : [];
   const excludedCompanies = Array.isArray(profile?.excluded_companies) ? profile.excluded_companies : [];
 
+  // Small tie-breaking nudges only — big bonuses saturate everything at 100 and destroy ranking
   let bonusPts = 0;
   if (locationTier === 'bangalore') {
-    bonusPts += 12;
-  } else if (locationTier === 'remote') {
-    bonusPts += 10;
-  } else if (locationTier === 'india') {
     bonusPts += 4;
+  } else if (locationTier === 'remote') {
+    bonusPts += 3;
+  } else if (locationTier === 'india') {
+    bonusPts += 2;
+  } else if (locationTier === 'abroad' || locationTier === 'remote_restricted') {
+    bonusPts -= 30;
   }
 
   const isFresherProfile =
     prefSeniority.length > 0 &&
     prefSeniority.every((s) => s === 'intern' || s === 'junior');
   if (isFresherProfile && job.seniority && !prefSeniority.includes(job.seniority)) {
-    bonusPts -= 45;
+    // Unstated level is a "maybe", not a mismatch
+    bonusPts -= job.seniority === 'unknown' ? 10 : 45;
   }
 
   if (roleCategory === 'non_tech') {
     bonusPts -= 38;
-  } else if (roleCategory !== 'other') {
-    bonusPts += 4;
+  }
+  if (isFresherProfile && Number(job.experience_min) >= 2) {
+    bonusPts -= 15;
   }
 
   if (targetCompanies.some((c) => c && companyLower.includes(String(c).toLowerCase().trim()))) {
@@ -358,22 +367,15 @@ export function parseResumeText(resumeText = '') {
   const exp = extractExperience(text, '');
   const mode = extractWorkMode(text, '', '');
 
-  // Estimate total years from date ranges like "2019 - 2026" or "2020 - Present"
-  let estimatedYoe = exp.min;
-  const yearMatches = text.match(/\b(200\d|201\d|202\d)\b/g);
-  if (yearMatches && yearMatches.length >= 2) {
-    const years = yearMatches.map(Number).sort((a, b) => a - b);
-    const span = new Date().getFullYear() - years[0];
-    if (span >= 1 && span <= 25) {
-      estimatedYoe = estimatedYoe ? Math.max(estimatedYoe, span) : span;
-    }
-  }
+  // Only trust explicit "N years of experience" statements. Year ranges on a student resume are
+  // almost always education (e.g. "B.Tech 2023 – 2027"), not work experience.
+  const estimatedYoe = exp.min;
 
   // Infer target titles from extracted skills & title mentions
   const inferredTitles = new Set();
   const titleChecks = [
     ['Full-Stack Engineer', /\b(full[- ]stack)\b/i],
-    ['Senior Software Engineer', /\b(software\s+engineer|swe)\b/i],
+    ['Software Engineer', /\b(software\s+engineer|swe|sde)\b/i],
     ['Backend Engineer', /\b(backend|back-end|distributed\s+systems)\b/i],
     ['Frontend Engineer', /\b(frontend|front-end|ui\s+engineer)\b/i],
     ['AI / ML Engineer', /\b(ai\s+engineer|machine\s+learning|llm|ml\s+engineer)\b/i],
@@ -395,9 +397,11 @@ export function parseResumeText(resumeText = '') {
     inferredTitles.add('Software Engineer');
   }
 
-  const yoe = estimatedYoe ?? 4;
+  const isStudent = /\b(b\.?\s?tech|b\.?e\.?|bachelor|undergraduate|final[- ]year|student|expected\s+(graduation|20\d\d))\b/i.test(text);
+  const yoe = estimatedYoe ?? (isStudent ? 0 : 2);
   let preferredSeniority = ['mid', 'senior'];
-  if (yoe <= 1) preferredSeniority = ['junior', 'mid'];
+  if (yoe < 1 || isStudent) preferredSeniority = ['intern', 'junior'];
+  else if (yoe <= 2) preferredSeniority = ['junior', 'mid'];
   else if (yoe >= 6) preferredSeniority = ['senior', 'staff', 'lead'];
 
   return {
@@ -407,52 +411,5 @@ export function parseResumeText(resumeText = '') {
     target_titles: Array.from(inferredTitles),
     preferred_seniority: preferredSeniority,
     work_modes: mode === 'onsite' ? ['hybrid', 'onsite'] : ['remote', 'hybrid'],
-  };
-}
-
-export function generateJobTailoring(job, profile) {
-  const scored = scoreJobAgainstProfile(job, profile);
-  const { matchedPrimary, matchedSecondary, missingJobSkills } = scored.breakdown;
-  const topMatched = [...matchedPrimary, ...matchedSecondary].slice(0, 6);
-  const company = job.company || 'your team';
-  const title = job.title || 'this role';
-  const userYoe = profile?.experience_years ?? 4;
-
-  const atsKeywords = Array.from(new Set([...(job.skills || []), ...matchedPrimary])).slice(0, 15);
-
-  const resumeSummary =
-    `Results-driven engineer with ${userYoe}+ years of experience building scalable production systems` +
-    (topMatched.length ? ` using ${topMatched.slice(0, 4).join(', ')}` : '') +
-    `. Proven track record shipping high-reliability architecture aligned with ${company}'s needs for ${title}.`;
-
-  const bulletTemplates = [
-    `Architected and scaled end-to-end production services using ${topMatched.slice(0, 3).join(', ') || 'modern full-stack technologies'}, improving latency and system reliability under high concurrency.`,
-    `Led cross-functional execution from technical design through deployment, incorporating automated testing, observability, and CI/CD best practices relevant to ${title}.`,
-    missingJobSkills.length > 0
-      ? `Rapidly adopted adjacent ecosystem tools and collaborated closely with infrastructure/product teams to bridge gaps across ${missingJobSkills.slice(0, 2).join(' and ')}.`
-      : `Delivered measurable product impact with clean APIs, resilient data pipelines, and strong developer ergonomics.`,
-  ];
-
-  const gapAdvice = missingJobSkills.length
-    ? `This posting mentions ${missingJobSkills.slice(0, 4).join(', ')}, which ${missingJobSkills.length === 1 ? 'is' : 'are'} not currently in your core profile. Emphasize transferable architectural experience in your cover note or add concrete project examples where you used comparable tools.`
-    : `Your skill profile strongly covers the core technical stack detected in this posting. Focus on quantifying scale, ownership, and business impact.`;
-
-  const outreachNote =
-    `Hi Hiring Team at ${company},\n\n` +
-    `I'm excited to apply for the ${title} opening${job.location ? ` (${job.location})` : ''}. ` +
-    `With ${userYoe}+ years of hands-on experience in ${topMatched.slice(0, 4).join(', ') || 'software engineering'}, ` +
-    `I've focused on shipping resilient, user-centric systems that align directly with what ${company} is building.\n\n` +
-    `I'd welcome the chance to share more about my recent work and how I can contribute immediately to the team.\n\n` +
-    `Best,\n${profile?.name || 'Candidate'}`;
-
-  return {
-    matchScore: scored.score,
-    atsKeywords,
-    strengths: topMatched,
-    missingSkills: missingJobSkills,
-    gapAdvice,
-    resumeSummary,
-    bulletTemplates,
-    outreachNote,
   };
 }
